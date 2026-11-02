@@ -2,10 +2,15 @@
 
 ## Current milestone
 
-Phase 3A only: add a read-only industry inventory. Phases 2A and 2B are accepted
-with in-game evidence; v0.1.0 is the stable baseline. Preserve the city scanner,
-mod identity, metadata, bootstrap, version and Git tags. Stop for user review
-before Phase 3B, terrain scanning, planning, UI or construction.
+Phase 3B only: add a bounded, read-only terrain inventory. City and industry
+inventories are accepted in-game; the baseline is commit b028a6e on main.
+Preserve both scanners, mod identity, revision, metadata, bootstrap and Git tags.
+Stop for review before Phase 3C, route planning, UI or construction. Do not commit
+or push. Terrain results stay in GUI-session memory, never saves or exports.
+
+Future planning must consider road alternatives, demand, distance, existing
+infrastructure and cost. A city or industry does not automatically need rail.
+Those decisions and economic calculations are outside Phase 3B.
 
 ## Development conventions
 
@@ -25,6 +30,10 @@ before Phase 3B, terrain scanning, planning, UI or construction.
   by entity ID. Distinguish missing data from zero and avoid repeated scans/logs.
 - Documented TF3 bindings may report Lua type "table". Check presence and use
   documented direct calls inside pcall; never require type(value) == "function".
+- Terrain sampling is capped at 24x24 cell centers. Validate coordinates before
+  height/water queries; clamped out-of-bounds heights are not valid samples.
+  Use bounded batches, retain explicit partial/completed status and log summaries
+  plus capped error examples, never every sample.
 - Keep the once-only flag out of engine state and GUI SaveData. Reload behavior
   of callback GUI state must pass real-game verification, including same-process reload.
 - Do not introduce globals except the documented resource entry point `data`.

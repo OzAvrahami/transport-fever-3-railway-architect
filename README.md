@@ -1,12 +1,18 @@
 # Railway Network Architect
 
-**Phase 3A: read-only city and industry inventories.** Plain Lua; no UI, construction, terrain or
-economy changes, dependencies, or export files. Identity and revision remain
+**Phase 3B: read-only city, industry and coarse terrain inventories.** Plain Lua;
+no UI, construction, terrain or economy changes, dependencies, or export files.
+Identity and revision remain
 `oz_railway_network_architect`, `Railway Network Architect`, **1**.
 
-Phases 2A and 2B are complete and verified in-game by the user. The stable baseline
-is **v0.1.0** on `main`; Phase 3A does not change the version, tags, manifest or
-metadata. The new industry scanner still requires in-game verification.
+Phases 2A, 2B and 3A are complete. City and industry scans succeeded in-game.
+The baseline for this work is **b028a6e** on `main`, reported pushed by the user.
+Phase 3B changes no version, tags, manifest or metadata. Terrain scanning still
+requires real-game verification.
+
+Future recommendations must consider geography, demand, road alternatives,
+distance, existing infrastructure and costs. Not every city or industry needs
+rail access. Those decisions are outside this inventory phase.
 
 ## Documented API invocation correction
 
@@ -37,8 +43,8 @@ The optional timer uses the same protected direct-call pattern; a timer exceptio
 leaves duration unavailable and adds an `error` field to the existing `DURATION`
 line. Returned data validation, lifecycle and the terminal guard are unchanged.
 
-The Phase 3A update below adds only the four industry files to the accepted
-development copy. All city files remain unchanged; README is not deployed.
+The Phase 3B update below adds only the four terrain files to the accepted
+development copy. All city and industry files remain unchanged; README is not deployed.
 
 If a readiness read throws, expect `WAIT_WORLD` followed by a diagnostic such as:
 
@@ -70,6 +76,10 @@ railway-architect/
       industry_inventory.script.lua
       industry_inventory_api.lua
       industry_inventory_data.lua
+      terrain_inventory.gs.lua
+      terrain_inventory.script.lua
+      terrain_inventory_api.lua
+      terrain_inventory_data.lua
 ```
 
 The manifest and bootstrap are unchanged. The new descriptor registers the live
@@ -78,7 +88,93 @@ callback; `city_inventory.script.lua` handles readiness, deduplication and loggi
 contains pure normalization and formatting. The industry files follow the same
 separation. Metadata still describes the accepted Phase 2B baseline and is
 deliberately unchanged. `cosmetic=true` and add/remove severity `None` remain
-consistent with read-only diagnostics; Phase 3A runtime/removal is not yet tested.
+consistent with read-only diagnostics; Phase 3B runtime/removal is not yet tested.
+
+## Terrain contracts and source evidence
+
+The official [engine reference](https://wiki.transportfever3.com/script-doc/api/engine.html)
+documents GUI-state read access and the terrain operations. The official
+[type reference](https://wiki.transportfever3.com/script-doc/api/type.html) documents
+Box2f and Vec2f. Installed evidence was inspected before implementation under
+`D:\SteamLibrary\steamapps\common\Transport Fever 3`:
+
+| Contract | Installed definition / shipped usage |
+| --- | --- |
+| `api.engine.terrain.getBoundingBox() -> Box2f` | `api/tealdef/api/engine.d.tl:1754`; `game_mechanics.zip` / `game_mechanics/fun_elements/custom_entity_util.tl:79` reads the returned box. |
+| `box.min.x/y`, `box.max.x/y` | `api/tealdef/api/type.d.tl:856-865` declares min/max corners; the same shipped helper reads these four fields at lines 81-85. The definitions label the corners Vec3f despite the Box2f name; only verified x/y fields are used. |
+| `api.type.Vec2f.new(x, y) -> Vec2f` | `api/tealdef/api/type.d.tl:511`, with x/y fields at 519/521; `gui.zip` / `gui/map_editor/map_editor.tl:1746` constructs a vector, then validates it. |
+| `api.engine.terrain.isValidCoordinate(position) -> boolean` | `engine.d.tl:1729`; same GUI file at 1747; `mission.zip` / `mission/tutorial/tutorial_story_util.tl:419` validates before a water query. Coordinates are world X/Y relative to map center. |
+| `api.engine.terrain.getHeightAt(position) -> number` | `engine.d.tl:1734`; `game_mechanics/fun_elements/custom_entity_util.tl:74` uses a Vec2f. Out-of-bounds reads can return the nearest map height. |
+| `api.engine.terrain.getBaseHeightAt(position) -> number` | `engine.d.tl:1740`; `game_mechanics/company/explorations/exploration_plane.script.tl:62`. Excludes non-permanent terrain alignments; documented 4 m resolution. Also clamps outside the map. |
+| `api.engine.terrain.isOnWater(position) -> boolean` | `engine.d.tl:1745`; `mission/tutorial/tutorial_story_util.tl:422`. Tests whether the point is below water level. No height-sign heuristic is used. |
+
+No native binding is required to have Lua type `function`. Documented direct calls
+are protected with `pcall`. Invalid return types and nonfinite numbers are treated
+as unavailable; runtime errors preserve their API path and original message.
+
+## Terrain grid, lifetime and performance
+
+The separate `terrain_inventory.gs.lua` registers `terrain_inventory.script@guiUpdate`.
+It reuses the accepted world-readiness and timer helpers without changing either
+existing scanner. Initial readiness polling and the advancing-tick gate match the
+accepted pattern. No terrain reads occur at module load time.
+
+Bounds are read once and must have finite, strictly increasing X/Y ranges. The
+grid has **24 columns x 24 rows**, with cell centers computed as
+`min + (index + 0.5) / count * (max - min)`, using zero-based row/column indices.
+X varies fastest, then Y. There is no random sampling or assumption of a centered,
+square or fixed-size map.
+
+Each point is constructed with Vec2f.new. Its actual x/y values are retained to
+account for float rounding. `isValidCoordinate` must return **true**, and the point
+must still be strictly inside the captured bounds, before any height/base/water
+query. A false validity result causes no terrain queries. Validation failure also
+causes no terrain queries; clamped heights can never validate a coordinate.
+
+Work is limited to **16 points every fourth GUI callback**, at most 36 batches.
+A normal batch makes at most 80 vector/terrain calls plus three world-readiness
+reads. There is no sampling on intervening callbacks or after termination. Each
+batch checks that the world is still available, its ID matches and time has not
+gone backwards; otherwise it aborts. Sampling can continue while paused once the
+initial tick gate has passed. It does not change game speed.
+
+Normalized data lives at `guiState:get().terrain` for this Game Script. It contains
+bounds, grid dimensions, up to 576 plain Lua sample records, aggregates, completion
+status and at most four error examples. Each sample retains actual x/y, height,
+baseHeight, onWater, coordinate validity, status and failed-read count. Missing
+values are nil; zero and negative heights and false water flags are preserved.
+There are no native vectors in retained results, file writes, engine-state writes,
+GUI SaveData calls or terrain exports. Results remain available after completion
+until that GUI session is discarded; same-process reload must be verified.
+
+While running, `status=scanning` and `complete=false`. A finished traversal sets
+`complete=true` and status `ok`, `partial` or `error`. An aborted traversal retains
+the collected subset with `status=aborted`, `complete=false`, and does not retry.
+No progress or per-point lines are emitted. At most four exact sample-error
+examples are logged; further occurrences are counted as suppressed. Setup/world
+failures use a separate `SCAN_ABORTED` diagnostic.
+
+Summary definitions:
+
+- `valid`: points with valid coordinates and all three terrain values available.
+- `invalid`: points explicitly rejected by coordinate/bounds validation.
+- `failed_samples`: points with construction/validation errors or unavailable reads.
+  These three counts sum to `processed`, which never exceeds `requested=576`.
+- `failed_reads`: failed sample operations, including bad return values; it can
+  exceed failed_samples. Setup/world errors are reported separately, not counted
+  as sample reads. No sample operations have occurred if setup aborts.
+- Height min/max/mean use available heights only from validated points, including
+  partial records. `height_samples` is their denominator. All three statistics
+  are unavailable when that denominator is zero.
+- Water count uses known true flags; `water_reads` counts known booleans. The
+  water count is unavailable if there were no successful water reads.
+- Duration measures application elapsed time, including waits between callbacks;
+  it is not CPU time. It may be zero or unavailable at the timer's resolution.
+
+For an unchanged map, sample order and data/statistics are deterministic; duration
+is not. A scan spans callbacks and is not an atomic terrain snapshot. Avoid editing
+the map during verification. This coarse inventory cannot resolve narrow rivers,
+local slopes or a viable railway alignment and makes no connection decisions.
 
 ## Industry data and verified sources
 
@@ -173,7 +269,7 @@ initialization/deduplication patterns. The code never writes engine state, calls
 `setGuiSaveData`, saves userdata or writes files. Public definitions do not
 explicitly guarantee GUI-state reset on every load path: same-process save reload
 is a mandatory acceptance test. There is no persistent engine-state completion
-flag. Repeat that acceptance test for the new industry Game Script in Phase 3A.
+flag. Repeat that acceptance test for the new terrain Game Script in Phase 3B.
 Tick advancement is an additional readiness condition, not a verified callback
 for the textual `Game is ready` log line; confirm actual timing in-game.
 
@@ -224,10 +320,10 @@ C:\Program Files (x86)\Steam\userdata\175442176\3493540\local\staging_area\oz_ra
 Keep `mod.json` directly inside that folder. Back up the old copy outside staging
 if desired; do not create another active copy with the same ID. Do not copy README,
 AGENTS or `.gitignore`. Do not modify the original game install or subscribed mods.
-The following command checks identity and copies only the four new industry files
+The following command checks identity and copies only the four new terrain files
 without recursive deletion or changes to saves. It requires the already installed,
-accepted city files to match the workspace before copying. Existing `_metadata`
-and `content` directories must remain in place. It does not overwrite city files,
+accepted city and industry files to match the workspace before copying. Existing
+`_metadata` and `content` directories must remain in place. It does not overwrite those files,
 the manifest or metadata. These instructions have not been executed by the agent.
 
 ```powershell
@@ -245,13 +341,15 @@ foreach ($rnaRoot in @($rnaSource, $rnaTarget)) {
     }
 }
 $rnaFiles = @(
-    'content\industry_inventory.gs.lua', 'content\industry_inventory.script.lua',
-    'content\industry_inventory_api.lua', 'content\industry_inventory_data.lua'
+    'content\terrain_inventory.gs.lua', 'content\terrain_inventory.script.lua',
+    'content\terrain_inventory_api.lua', 'content\terrain_inventory_data.lua'
 )
 $rnaBaseline = @(
     'mod.json', '_metadata\modinfo.json', 'content\mod.script.lua',
     'content\city_inventory.gs.lua', 'content\city_inventory.script.lua',
-    'content\city_inventory_api.lua', 'content\city_inventory_data.lua'
+    'content\city_inventory_api.lua', 'content\city_inventory_data.lua',
+    'content\industry_inventory.gs.lua', 'content\industry_inventory.script.lua',
+    'content\industry_inventory_api.lua', 'content\industry_inventory_data.lua'
 )
 foreach ($rnaFile in $rnaBaseline) {
     $rnaSourceHash = (Get-FileHash -LiteralPath (Join-Path $rnaSource $rnaFile) -ErrorAction Stop).Hash
@@ -290,20 +388,26 @@ staging or launched TF3.
    the unchanged town output with the accepted baseline and industry names/counts
    with the game's industry list. Inspect several industries in different locations
    and their levels; the log reports raw engine levels and construction origins.
+   For `[RNA:TERRAIN:3B]`, verify one GRID (24x24), SCAN_START, BOUNDS and summary
+   sequence. Allow several seconds for all batches. Expect 576 processed samples;
+   do not interpret a missing SCAN_COMPLETE or complete=false as a finished map.
+   Check valid + invalid + failed_samples = processed. For a normal map, expect
+   status=ok and failed_reads=0. Compare bounds and height/water ranges with the map.
 4. Let the simulation run, pause and resume. There must be no additional scan.
 5. **Essential:** using the game's normal UI and a disposable test save, reload in
    the same TF3 process. Expect one new scan for that load. Also test returning to
    the menu and loading a different test game, then a fresh application launch.
    The agent does not access or edit saves; the user controls these manual tests.
-6. If an existing zero-industry test map is available, load it and unpause. Expect
-   `[RNA:IND:3A] TOTAL count=0 incomplete=0 rejected=0` and completion status `ok`.
-   Do not delete industries from a valued save just to test this.
+6. If available, compare an existing flat/dry map and one with water and negative
+   terrain heights. Zero and negative heights must remain numeric; dry points
+   must remain false, not missing. For an unchanged map, repeat after reload and
+   compare terrain statistics excluding duration. Do not alter a valued map for tests.
 7. Exit normally and retain the relevant log excerpt before another launch can
-   replace it. Stop at Phase 3A for review; do not proceed to Phase 3B.
+   replace it. Stop at Phase 3B for review; do not proceed to Phase 3C.
 
 ```powershell
 $rnaLog = 'C:\Program Files (x86)\Steam\userdata\175442176\3493540\local\crash_dump\stdout.txt'
-Select-String -LiteralPath $rnaLog -SimpleMatch '[RNA:CITY:2B]', '[RNA:IND:3A]'
+Select-String -LiteralPath $rnaLog -SimpleMatch '[RNA:CITY:2B]', '[RNA:IND:3A]', '[RNA:TERRAIN:3B]'
 ```
 
 Illustrative output; IDs, names, coordinates and time will vary:
@@ -328,6 +432,24 @@ Industry example (illustrative values, not a recorded runtime result):
 [RNA:IND:3A] SCAN_COMPLETE status=ok
 ```
 
+Terrain example (illustrative values, not a recorded runtime result):
+
+```text
+[RNA:TERRAIN:3B] WAIT_WORLD waiting_for_valid_world_and_tick_advance; unpause_to_scan
+[RNA:TERRAIN:3B] GRID columns=24 rows=24 requested=576 batch_size=16 callback_interval=4
+[RNA:TERRAIN:3B] SCAN_START status=scanning
+[RNA:TERRAIN:3B] BOUNDS min_x=-4096.000000 min_y=-2048.000000 max_x=4096.000000 max_y=2048.000000
+[RNA:TERRAIN:3B] SUMMARY processed=576 requested=576 valid=576 invalid=0 failed_samples=0 failed_reads=0 suppressed_errors=0
+[RNA:TERRAIN:3B] HEIGHT min=-12.000000 max=240.000000 mean=83.500000 height_samples=576
+[RNA:TERRAIN:3B] WATER count=48 water_reads=576
+[RNA:TERRAIN:3B] DURATION seconds=2.400000 clock=application_time includes_callback_waits=true
+[RNA:TERRAIN:3B] SCAN_COMPLETE status=ok complete=true
+```
+
+Terrain sample failures add `READ_ERROR sample=<index> detail="<API>: <message>"`
+before the summary. Fatal interruption logs SCAN_ABORTED and ends with
+`SCAN_END status=aborted complete=false`; retained samples are an incomplete scan.
+
 Missing fields print `unavailable`, not `0`. Partial records yield completion
 status `partial`. Enumeration/import failure yields `SCAN_ERROR`, an unavailable
 count and completion status `error`. Readiness/API failure yields `SCAN_ABORTED`
@@ -338,11 +460,12 @@ cannot be read. It is not CPU profiling.
 
 | Symptom | Action |
 | --- | --- |
-| Bootstrap or city output only, no industry marker | Check all four industry files, references, activation and resource errors. Discovery alone is not execution. |
+| City/industry output only, no terrain marker | Check all four terrain files, references, activation and resource errors. Discovery alone is not execution. |
 | `WAIT_WORLD` only | Unpause. If still stuck while time advances, capture the build and log errors. |
 | `SCAN_ABORTED` or `SCAN_ERROR` | Capture the error, resolve it, then reload to retest. |
 | Repeated scans in one load, or no scan on same-process reload | Session-state lifecycle failed acceptance; stop and report it. |
-| `status=partial` | Inspect missing fields/errors and compare against the town list. |
+| `status=partial` or terrain `status=error` | Inspect the capped error details, counts and available-data denominators. |
+| Terrain SCAN_START without completion | Wait for batching to finish; inspect SCAN_ABORTED/SCAN_END and other script errors. |
 | Zero industry count on a map with industries | Treat as a failure; inspect enumeration and lifecycle timing. |
 | Repeated Phase 2A worker messages | Known bootstrap behavior; count each inventory prefix separately. |
 
@@ -350,20 +473,21 @@ cannot be read. It is not CPU profiling.
 
 Static checks passed for strict JSON parsing, metadata, UTF-8 without BOM, local
 resource/import references, callback exports, installed API symbol evidence and
-unchanged city files/manifest/metadata/bootstrap versus the Git baseline. Both
+unchanged city/industry files, manifest, metadata and bootstrap versus b028a6e. Both
 PowerShell examples passed PowerShell parser validation without execution.
 Manual review covers empty maps, nil fields, zero
 coordinates, invalid entities, duplicates, sorting, readiness and terminal guards.
 
 No Lua interpreter/compiler or Lua parser was found in the checked local tooling.
 Lua syntax is manually reviewed, not compiler-validated. No dependencies were
-installed. The user verified Phase 2B in-game. Phase 3A registration, industry data,
-GUI-state lifetime on reload, and precise scan timing remain untested; the manual
+installed. The user verified both existing inventories in-game. Phase 3B registration,
+terrain data, batching performance and GUI-state lifetime on reload remain untested; the manual
 acceptance tests above are required. The public
 references do not expose a guaranteed `Game is ready` callback or explicit
 GUI-state reset contract for all load paths.
 
-Each scan runs synchronously in its GUI callback and logs every record once. Very
-large maps may briefly stall. This is a snapshot; it does not track later map
+City and industry scans run synchronously; terrain sampling uses bounded batches
+and summary logging. Actual callback latency still needs measurement in-game.
+These inventories do not track later map
 changes. No files in the original installation or saves were modified, and nothing
-was published, committed or pushed. Stop after Phase 3A for review.
+was published, committed or pushed by the agent. Stop after Phase 3B for review.

@@ -2,10 +2,10 @@
 
 ## Current milestone
 
-Phase 2B only: a read-only city inventory. Phase 2A is accepted with in-game
-evidence. Preserve its identity and working resource-loading bootstrap. Stop for
-user review and real-game verification before Phase 3, terrain analysis, planning,
-UI or construction. Do not infer authorization for later phases from the vision.
+Phase 3A only: add a read-only industry inventory. Phases 2A and 2B are accepted
+with in-game evidence; v0.1.0 is the stable baseline. Preserve the city scanner,
+mod identity, metadata, bootstrap, version and Git tags. Stop for user review
+before Phase 3B, terrain scanning, planning, UI or construction.
 
 ## Development conventions
 
@@ -23,6 +23,8 @@ UI or construction. Do not infer authorization for later phases from the vision.
   city queries into the bootstrap hook. Use the verified Game Script callback.
 - Keep engine API integration separate from pure data normalization. Sort records
   by entity ID. Distinguish missing data from zero and avoid repeated scans/logs.
+- Documented TF3 bindings may report Lua type "table". Check presence and use
+  documented direct calls inside pcall; never require type(value) == "function".
 - Keep the once-only flag out of engine state and GUI SaveData. Reload behavior
   of callback GUI state must pass real-game verification, including same-process reload.
 - Do not introduce globals except the documented resource entry point `data`.

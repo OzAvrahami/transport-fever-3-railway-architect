@@ -1,14 +1,12 @@
 # Railway Network Architect
 
-**Phase 2B: read-only city inventory.** Plain Lua; no UI, construction, terrain or
+**Phase 3A: read-only city and industry inventories.** Plain Lua; no UI, construction, terrain or
 economy changes, dependencies, or export files. Identity and revision remain
 `oz_railway_network_architect`, `Railway Network Architect`, **1**.
 
-Phase 2A was accepted by the user: staging discovery, activation, bootstrap output,
-`Game is ready`, and normal shutdown were verified. Its resource-loading marker
-appeared on multiple workers. The first Phase 2B runtime test reached the GUI
-callback, then aborted in the capability check before enumeration. A successful
-scan has **not** been verified in TF3.
+Phases 2A and 2B are complete and verified in-game by the user. The stable baseline
+is **v0.1.0** on `main`; Phase 3A does not change the version, tags, manifest or
+metadata. The new industry scanner still requires in-game verification.
 
 ## Documented API invocation correction
 
@@ -17,7 +15,7 @@ The scanner incorrectly required `type(value) == "function"`. The documented
 call signatures do not establish that runtime representation requirement.
 The correction checks presence and invokes the documented calls inside `pcall`;
 it makes no claim about internal binding representation and does not inspect or
-modify metatables. Successful scanning still requires a new runtime test.
+modify metatables. The corrected city scanner was subsequently verified in-game.
 
 - [Official engine signatures and state access](https://wiki.transportfever3.com/script-doc/api/engine.html):
   `getEntitiesWithComponent(componentType, filters?)` returns entity IDs;
@@ -39,12 +37,8 @@ The optional timer uses the same protected direct-call pattern; a timer exceptio
 leaves duration unavailable and adds an `error` field to the existing `DURATION`
 line. Returned data validation, lifecycle and the terminal guard are unchanged.
 
-For this patch, close TF3 and copy `content/city_inventory_api.lua` and
-`content/city_inventory.script.lua` from
-the workspace package into the same relative path in the existing staging package
-(full paths below). Compare source/destination hashes with `Get-FileHash` if
-desired. Keep metadata and all other staged files unchanged; README is not deployed.
-Restart TF3 and load the test game, since the failed session was marked finished.
+The Phase 3A update below adds only the four industry files to the accepted
+development copy. All city files remain unchanged; README is not deployed.
 
 If a readiness read throws, expect `WAIT_WORLD` followed by a diagnostic such as:
 
@@ -72,14 +66,62 @@ railway-architect/
       city_inventory.script.lua
       city_inventory_api.lua
       city_inventory_data.lua
+      industry_inventory.gs.lua
+      industry_inventory.script.lua
+      industry_inventory_api.lua
+      industry_inventory_data.lua
 ```
 
 The manifest and bootstrap are unchanged. The new descriptor registers the live
 callback; `city_inventory.script.lua` handles readiness, deduplication and logging;
 `city_inventory_api.lua` contains game integration; `city_inventory_data.lua`
-contains pure normalization and formatting. Metadata now describes Phase 2B.
-`cosmetic=true` and add/remove severity `None` reflect the read-only design, not a
-completed Phase 2B runtime/removal test.
+contains pure normalization and formatting. The industry files follow the same
+separation. Metadata still describes the accepted Phase 2B baseline and is
+deliberately unchanged. `cosmetic=true` and add/remove severity `None` remain
+consistent with read-only diagnostics; Phase 3A runtime/removal is not yet tested.
+
+## Industry data and verified sources
+
+Research was completed before implementation against the official
+[engine API](https://wiki.transportfever3.com/script-doc/api/engine.html),
+[engine utilities](https://wiki.transportfever3.com/script-doc/api/engine/util.html)
+and [matrix/vector types](https://wiki.transportfever3.com/script-doc/api/type.html).
+The following installed sources are under
+`D:\SteamLibrary\steamapps\common\Transport Fever 3`:
+
+| Field / operation | Installed evidence and semantics |
+| --- | --- |
+| Entity IDs | `api/tealdef/api/engine.d.tl:1713` and `base/content/gui.zip` / `gui/statistics/statistic_industries.tl:392`: `api.engine.getEntitiesWithComponent(api.type.ComponentType.INDUSTRY)`. |
+| Display name | Same GUI file, lines 356 and 454: `api.engine.util.getEntityName(industryEntity)`. `api/tealdef/api/engine/util.d.tl:1040` documents a name or nil. |
+| Level | `api/tealdef/api/engine.d.tl:447`: `Industry.level` is the current construction level, an integer. GUI `gui/entity_window/industry/industry.tl:72` reads it. Report the raw value; no UI offset or inferred range. |
+| Construction entity | `api/tealdef/api/engine.d.tl:455`: `Industry.construction`. GUI `gui/line_vehicle_mgmt/manager_window.tl:382` reads its `CONSTRUCTION` component. |
+| Resource identifier | `api/tealdef/api/engine.d.tl:307`: `Construction.fileName` is the construction name, or ID for dynamic constructions. `ResName` is a string (`api/type.d.tl:15`). `game_mechanics.zip` / `game_mechanics/fun_elements/ufo_util.tl:82-85` follows Industry -> Construction -> fileName. |
+| X/Y/Z | `Construction.transf` is the world transformation (`engine.d.tl:312`). `Mat4f.getTransl` returns its translation (`type.d.tl:782`). `game_mechanics.zip` / `game_mechanics/celebrations/celebrations.script.tl:211` uses `construction.transf:getTransl()`; Vec3f exposes x/y/z. |
+
+The resource field identifies the associated construction; it is not an inferred
+industry category. Dynamic IDs need not be filesystem paths. Coordinates are the
+construction's world origin, not the industry bounding-box center, cargo terminal,
+or terrain height. Multiple industry entities may share a construction: records
+remain keyed by industry ID, with no deduplication by construction or name.
+
+`industry_inventory.gs.lua` registers a separate GUI Game Script using the verified
+city lifecycle pattern. Its callback has its own GUI-state run-once guard. The
+adapter reuses only `world()` and `seconds()` from the unchanged city adapter; it
+does not invoke city collection or require TOWN/BOUNDING_VOLUME capabilities.
+No engine reads occur during module loading. It waits for a valid world and a
+later tick, marks the attempt finished, then reads industries exactly once.
+City and industry scan order is unspecified; a failure in one does not set the
+other's completion flag.
+
+Each industry record contains plain Lua values: ID, name, resource, raw level,
+construction ID and X/Y/Z. All engine calls and native field reads are protected;
+errors identify the read and preserve the runtime message. A failed name lookup
+does not hide construction fields. Invalid IDs are rejected before engine calls;
+duplicate IDs are counted as rejected during normalization. Disappeared entities
+retain a `read_error` record. Missing data prints `unavailable`, zero stays zero,
+and nonfinite coordinates are missing. Records sort numerically by industry ID.
+`incomplete` counts accepted records with missing data or errors, while `rejected`
+counts malformed/duplicate IDs. An empty enumeration succeeds with zero counts.
 
 ## Lifecycle and source evidence
 
@@ -131,7 +173,7 @@ initialization/deduplication patterns. The code never writes engine state, calls
 `setGuiSaveData`, saves userdata or writes files. Public definitions do not
 explicitly guarantee GUI-state reset on every load path: same-process save reload
 is a mandatory acceptance test. There is no persistent engine-state completion
-flag. If that test fails, resolve session semantics before accepting Phase 2B.
+flag. Repeat that acceptance test for the new industry Game Script in Phase 3A.
 Tick advancement is an additional readiness condition, not a verified callback
 for the textual `Game is ready` log line; confirm actual timing in-game.
 
@@ -182,9 +224,11 @@ C:\Program Files (x86)\Steam\userdata\175442176\3493540\local\staging_area\oz_ra
 Keep `mod.json` directly inside that folder. Back up the old copy outside staging
 if desired; do not create another active copy with the same ID. Do not copy README,
 AGENTS or `.gitignore`. Do not modify the original game install or subscribed mods.
-The following command checks identity and copies seven explicit files without
-recursive deletion or changes to saves. Existing `_metadata` and `content`
-directories must remain in place.
+The following command checks identity and copies only the four new industry files
+without recursive deletion or changes to saves. It requires the already installed,
+accepted city files to match the workspace before copying. Existing `_metadata`
+and `content` directories must remain in place. It does not overwrite city files,
+the manifest or metadata. These instructions have not been executed by the agent.
 
 ```powershell
 $rnaSource = 'D:\code\transport-fever-3\railway-architect\oz_railway_network_architect'
@@ -201,10 +245,21 @@ foreach ($rnaRoot in @($rnaSource, $rnaTarget)) {
     }
 }
 $rnaFiles = @(
+    'content\industry_inventory.gs.lua', 'content\industry_inventory.script.lua',
+    'content\industry_inventory_api.lua', 'content\industry_inventory_data.lua'
+)
+$rnaBaseline = @(
     'mod.json', '_metadata\modinfo.json', 'content\mod.script.lua',
     'content\city_inventory.gs.lua', 'content\city_inventory.script.lua',
     'content\city_inventory_api.lua', 'content\city_inventory_data.lua'
 )
+foreach ($rnaFile in $rnaBaseline) {
+    $rnaSourceHash = (Get-FileHash -LiteralPath (Join-Path $rnaSource $rnaFile) -ErrorAction Stop).Hash
+    $rnaTargetHash = (Get-FileHash -LiteralPath (Join-Path $rnaTarget $rnaFile) -ErrorAction Stop).Hash
+    if ($rnaSourceHash -ne $rnaTargetHash) {
+        throw "Baseline mismatch; review before updating: $rnaFile"
+    }
+}
 foreach ($rnaFile in $rnaFiles) {
     if (-not (Test-Path -LiteralPath (Join-Path $rnaSource $rnaFile) -PathType Leaf)) {
         throw "Missing source file: $rnaFile"
@@ -230,23 +285,25 @@ staging or launched TF3.
    disposable test game and disable unrelated optional mods.
 2. Wait for loading to finish, then briefly unpause if necessary. Allow several
    seconds for polling. No custom UI is expected.
-3. Find one `SCAN_START`, town records in ascending numeric ID order, total count,
-   duration and `SCAN_COMPLETE status=ok`. Compare names/count with the game's town
-   list. Duplicate names must remain separate IDs.
+3. For each prefix, `[RNA:CITY:2B]` and `[RNA:IND:3A]`, find one `SCAN_START`,
+   records in ascending numeric ID order, counts, duration and completion. Compare
+   the unchanged town output with the accepted baseline and industry names/counts
+   with the game's industry list. Inspect several industries in different locations
+   and their levels; the log reports raw engine levels and construction origins.
 4. Let the simulation run, pause and resume. There must be no additional scan.
 5. **Essential:** using the game's normal UI and a disposable test save, reload in
    the same TF3 process. Expect one new scan for that load. Also test returning to
    the menu and loading a different test game, then a fresh application launch.
    The agent does not access or edit saves; the user controls these manual tests.
-6. If an existing zero-town test map is available, load it and unpause. Expect
-   `TOTAL count=0 incomplete=0 rejected=0` and `SCAN_COMPLETE status=ok`. Do not
-   delete towns from a valued save just to test this.
+6. If an existing zero-industry test map is available, load it and unpause. Expect
+   `[RNA:IND:3A] TOTAL count=0 incomplete=0 rejected=0` and completion status `ok`.
+   Do not delete industries from a valued save just to test this.
 7. Exit normally and retain the relevant log excerpt before another launch can
-   replace it. Do not proceed to Phase 3 until real-game review accepts Phase 2B.
+   replace it. Stop at Phase 3A for review; do not proceed to Phase 3B.
 
 ```powershell
 $rnaLog = 'C:\Program Files (x86)\Steam\userdata\175442176\3493540\local\crash_dump\stdout.txt'
-Select-String -LiteralPath $rnaLog -SimpleMatch '[RNA:CITY:2B]'
+Select-String -LiteralPath $rnaLog -SimpleMatch '[RNA:CITY:2B]', '[RNA:IND:3A]'
 ```
 
 Illustrative output; IDs, names, coordinates and time will vary:
@@ -260,6 +317,17 @@ Illustrative output; IDs, names, coordinates and time will vary:
 [RNA:CITY:2B] SCAN_COMPLETE status=ok
 ```
 
+Industry example (illustrative values, not a recorded runtime result):
+
+```text
+[RNA:IND:3A] WAIT_WORLD waiting_for_valid_world_and_tick_advance; unpause_to_scan
+[RNA:IND:3A] SCAN_START
+[RNA:IND:3A] INDUSTRY id=201 name="Example Industry" resource="example_resource_id" level=0 construction=200 x=0.000000 y=-300.000000 z=12.000000 status=ok
+[RNA:IND:3A] TOTAL count=1 incomplete=0 rejected=0
+[RNA:IND:3A] DURATION seconds=0.001000 clock=application_time includes_record_logging=true
+[RNA:IND:3A] SCAN_COMPLETE status=ok
+```
+
 Missing fields print `unavailable`, not `0`. Partial records yield completion
 status `partial`. Enumeration/import failure yields `SCAN_ERROR`, an unavailable
 count and completion status `error`. Readiness/API failure yields `SCAN_ABORTED`
@@ -270,31 +338,32 @@ cannot be read. It is not CPU profiling.
 
 | Symptom | Action |
 | --- | --- |
-| Bootstrap only, no Phase 2B marker | Check new files, references, activation and resource errors. Discovery alone is not execution. |
+| Bootstrap or city output only, no industry marker | Check all four industry files, references, activation and resource errors. Discovery alone is not execution. |
 | `WAIT_WORLD` only | Unpause. If still stuck while time advances, capture the build and log errors. |
 | `SCAN_ABORTED` or `SCAN_ERROR` | Capture the error, resolve it, then reload to retest. |
 | Repeated scans in one load, or no scan on same-process reload | Session-state lifecycle failed acceptance; stop and report it. |
 | `status=partial` | Inspect missing fields/errors and compare against the town list. |
-| Zero count on a populated map | Treat as a failure; inspect enumeration and lifecycle timing. |
-| Repeated Phase 2A worker messages | Known bootstrap behavior; only count `[RNA:CITY:2B]` scans. |
+| Zero industry count on a map with industries | Treat as a failure; inspect enumeration and lifecycle timing. |
+| Repeated Phase 2A worker messages | Known bootstrap behavior; count each inventory prefix separately. |
 
 ## Validation and unresolved risks
 
 Static checks passed for strict JSON parsing, metadata, UTF-8 without BOM, local
 resource/import references, callback exports, installed API symbol evidence and
-byte-identical manifest/bootstrap versus the accepted staging copy. Both
+unchanged city files/manifest/metadata/bootstrap versus the Git baseline. Both
 PowerShell examples passed PowerShell parser validation without execution.
 Manual review covers empty maps, nil fields, zero
 coordinates, invalid entities, duplicates, sorting, readiness and terminal guards.
 
 No Lua interpreter/compiler or Lua parser was found in the checked local tooling.
 Lua syntax is manually reviewed, not compiler-validated. No dependencies were
-installed. TF3 integration, GUI-state lifetime on reload, and precise scan timing
-remain untested; the manual acceptance tests above are required. The public
+installed. The user verified Phase 2B in-game. Phase 3A registration, industry data,
+GUI-state lifetime on reload, and precise scan timing remain untested; the manual
+acceptance tests above are required. The public
 references do not expose a guaranteed `Game is ready` callback or explicit
 GUI-state reset contract for all load paths.
 
-The scan runs synchronously in the GUI callback and logs every town once. Very
-large maps may briefly stall. This is a snapshot; it does not track later town
+Each scan runs synchronously in its GUI callback and logs every record once. Very
+large maps may briefly stall. This is a snapshot; it does not track later map
 changes. No files in the original installation or saves were modified, and nothing
-was published, committed or pushed. Stop after Phase 2B for review.
+was published, committed or pushed. Stop after Phase 3A for review.

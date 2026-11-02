@@ -1,0 +1,11 @@
+{
+  "modId": "oz_railway_network_architect",
+  "revision": 1,
+  "severityAdd": "None",
+  "severityRemove": "None",
+  "visible": true,
+  "cosmetic": true,
+  "runScript": {
+    "fileName": "oz_railway_network_architect::/mod.script@runFn"
+  }
+}

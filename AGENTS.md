@@ -1,0 +1,64 @@
+# Railway Network Architect
+
+## Current milestone
+
+Phase 2B only: a read-only city inventory. Phase 2A is accepted with in-game
+evidence. Preserve its identity and working resource-loading bootstrap. Stop for
+user review and real-game verification before Phase 3, terrain analysis, planning,
+UI or construction. Do not infer authorization for later phases from the vision.
+
+## Development conventions
+
+- The deployable mod is `oz_railway_network_architect/`; repository documentation
+  and development tools stay outside it.
+- Keep `modId` as `oz_railway_network_architect`, the display name as
+  `Railway Network Architect`, and the current revision as `1`.
+- Use plain Lua. Do not add a compiler, package manager or
+  other dependency without a demonstrated need.
+- Use four spaces in Lua and two spaces in JSON. Encode text as UTF-8 without BOM.
+- Use lowercase file and directory names inside the deployable mod.
+- Follow verified TF3 resource references and lifecycle contracts. Never assume
+  TF2 compatibility. Keep documentation links and local evidence in README.md.
+- A resource-loading diagnostic does not prove live-world readiness. Never put
+  city queries into the bootstrap hook. Use the verified Game Script callback.
+- Keep engine API integration separate from pure data normalization. Sort records
+  by entity ID. Distinguish missing data from zero and avoid repeated scans/logs.
+- Keep the once-only flag out of engine state and GUI SaveData. Reload behavior
+  of callback GUI state must pass real-game verification, including same-process reload.
+- Do not introduce globals except the documented resource entry point `data`.
+- Validate JSON, metadata, script references and encoding after relevant edits.
+  Use an existing Lua checker if available; do not claim static checks prove a
+  successful TF3 load. Record checks that were unavailable or not run.
+
+## Safety and scope
+
+- Treat installed game files, shipped examples and API definitions as read-only.
+- Do not invoke world-changing commands or change simulation configuration.
+- Do not persist mod state or modify user saves in this milestone.
+- Do not install or overwrite a local mod copy without a user request to do so.
+  Document installation steps for the user instead.
+- Do not publish, upload, commit or push without explicit user authorization.
+- Reassess `cosmetic`, `severityAdd` and `severityRemove` when behavior changes;
+  the current values apply only to diagnostics and read-only inventory.
+- Keep changes small and report verified behavior separately from assumptions.
+
+<!-- OCTOCODE-GLOBAL-START -->
+## Octocode MCP — Codebase Research
+
+Prefer Octocode for unfamiliar or complex codebases, architecture and dependency
+analysis, locating implementations and callers, cross-file changes, regressions,
+and relevant external repositories or npm packages. Do not invoke it for simple
+localized edits or questions already answered by verified evidence.
+
+1. Start focused discovery with localSearch.
+2. Read relevant source with localGetFileContent.
+3. Use localAnalyzeGraph when dependencies matter.
+4. Use lspGetSemantics when symbol-level verification is needed.
+5. Verify conclusions against source and distinguish evidence from assumptions.
+
+Prefer narrow searches and reuse findings. Graphs are structural evidence, not
+runtime proof. Do not modify files merely to investigate. Never expose credentials,
+tokens or private repository contents. Preserve repository-specific instructions
+and do not change Git, release, testing or deployment workflows. If Octocode is
+unavailable for a path, report the limitation and use appropriate read-only tools.
+<!-- OCTOCODE-GLOBAL-END -->

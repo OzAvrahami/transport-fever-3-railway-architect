@@ -2,15 +2,15 @@
 
 ## Current milestone
 
-Phase 3B only: add a bounded, read-only terrain inventory. City and industry
-inventories are accepted in-game; the baseline is commit b028a6e on main.
-Preserve both scanners, mod identity, revision, metadata, bootstrap and Git tags.
-Stop for review before Phase 3C, route planning, UI or construction. Do not commit
-or push. Terrain results stay in GUI-session memory, never saves or exports.
+Phase 3C only: add a read-only railway topology inventory. City, industry and
+terrain inventories are accepted in-game; the baseline is b262240 on main.
+Preserve all accepted scanners, mod identity, revision, metadata and bootstrap.
+Do not commit, tag, push or publish. Results stay in GUI-session memory, never
+saves or exports. Stop for review before network planning, UI or construction.
 
 Future planning must consider road alternatives, demand, distance, existing
 infrastructure and cost. A city or industry does not automatically need rail.
-Those decisions and economic calculations are outside Phase 3B.
+Those decisions and economic calculations are outside Phase 3C.
 
 ## Development conventions
 
@@ -28,6 +28,11 @@ Those decisions and economic calculations are outside Phase 3B.
   city queries into the bootstrap hook. Use the verified Game Script callback.
 - Keep engine API integration separate from pure data normalization. Sort records
   by entity ID. Distinguish missing data from zero and avoid repeated scans/logs.
+- Railway adjacency describes shared BASE_NODE endpoints only. Degree >= 3 is a
+  junction candidate, not operational switch connectivity or route availability.
+  Empty railway networks must succeed. Never classify all STATION entities as rail.
+- Keep synthetic graph tests outside the mod package. An isolated development
+  Lua runtime is permitted for tests; add no game dependency or project manifest.
 - Documented TF3 bindings may report Lua type "table". Check presence and use
   documented direct calls inside pcall; never require type(value) == "function".
 - Terrain sampling is capped at 24x24 cell centers. Validate coordinates before

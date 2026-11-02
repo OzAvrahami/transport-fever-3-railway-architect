@@ -1,14 +1,15 @@
 # Railway Network Architect
 
-**Phase 3B: read-only city, industry and coarse terrain inventories.** Plain Lua;
-no UI, construction, terrain or economy changes, dependencies, or export files.
+**Phase 3C: read-only railway topology inventory**, alongside the accepted city,
+industry and coarse terrain inventories. Plain Lua; no UI, construction, terrain
+or economy changes, runtime dependencies, or export files.
 Identity and revision remain
 `oz_railway_network_architect`, `Railway Network Architect`, **1**.
 
-Phases 2A, 2B and 3A are complete. City and industry scans succeeded in-game.
-The baseline for this work is **b028a6e** on `main`, reported pushed by the user.
-Phase 3B changes no version, tags, manifest or metadata. Terrain scanning still
-requires real-game verification.
+Phases 2A through 3B are accepted and runtime verified by the user.
+The baseline for this work is **b262240** on `main`.
+Phase 3C changes no version, tags, manifest or metadata. Railway scanning still
+requires real-game verification. No commit, tag, push or staging update is performed.
 
 Future recommendations must consider geography, demand, road alternatives,
 distance, existing infrastructure and costs. Not every city or industry needs
@@ -43,8 +44,8 @@ The optional timer uses the same protected direct-call pattern; a timer exceptio
 leaves duration unavailable and adds an `error` field to the existing `DURATION`
 line. Returned data validation, lifecycle and the terminal guard are unchanged.
 
-The Phase 3B update below adds only the four terrain files to the accepted
-development copy. All city and industry files remain unchanged; README is not deployed.
+The Phase 3C update below adds only the four railway files to the accepted
+development copy. All existing scanners remain unchanged; README is not deployed.
 
 If a readiness read throws, expect `WAIT_WORLD` followed by a diagnostic such as:
 
@@ -63,6 +64,9 @@ railway-architect/
   .gitignore
   AGENTS.md
   README.md
+  tests/
+    run_lua_tests.py
+    rail_inventory_test.lua
   oz_railway_network_architect/
     mod.json
     _metadata/modinfo.json
@@ -80,6 +84,10 @@ railway-architect/
       terrain_inventory.script.lua
       terrain_inventory_api.lua
       terrain_inventory_data.lua
+      rail_inventory.gs.lua
+      rail_inventory.script.lua
+      rail_inventory_api.lua
+      rail_inventory_data.lua
 ```
 
 The manifest and bootstrap are unchanged. The new descriptor registers the live
@@ -88,7 +96,119 @@ callback; `city_inventory.script.lua` handles readiness, deduplication and loggi
 contains pure normalization and formatting. The industry files follow the same
 separation. Metadata still describes the accepted Phase 2B baseline and is
 deliberately unchanged. `cosmetic=true` and add/remove severity `None` remain
-consistent with read-only diagnostics; Phase 3B runtime/removal is not yet tested.
+consistent with read-only diagnostics; Phase 3C runtime/removal is not yet tested.
+
+## Railway contracts and source evidence
+
+The official [engine reference](https://wiki.transportfever3.com/script-doc/api/engine.html)
+documents GUI-state read access and BaseEdge/BaseNode fields. The official
+[system reference](https://wiki.transportfever3.com/script-doc/api/engine/system.html)
+documents track-specific enumeration and station systems. Definitions and shipped
+scripts were inspected read-only under `D:\SteamLibrary\steamapps\common\Transport Fever 3`
+before implementation:
+
+| Contract | Installed definition / shipped evidence |
+| --- | --- |
+| `api.engine.system.streetSystem.getNode2TrackEdgeMap() -> {Entity: {Entity}}` | `api/tealdef/api/engine/system.d.tl:303-304`: base nodes to connected base track segments. Used once for global discovery; repeated references are expected. No shipped caller was found in the searched GUI/scripts/game-mechanics/mission archives; the API contract itself documents this call. |
+| `getNodeTrackSegments(nodeEntity) -> {Entity}` | Same definition, lines 313-315; `gui.zip/gui/entity_window/view_manager_util.tl:7-31` reads connected BASE_EDGE components. This is a per-node query, not global enumeration; not needed by the scanner. |
+| `entityExists(entity) -> boolean`, `getComponent(entity, ComponentType) -> component or nil` | `api/tealdef/api/engine.d.tl:1690,1723`; the GUI helper above uses BASE_EDGE; `mission.zip/mission/tasks/auto_builder/track_builder.tl:20` reads BASE_NODE. Direct dot calls, protected by pcall. |
+| `BaseEdge.node0/node1: Entity`, `position0/position1: Vec3f` | `engine.d.tl:111-114`. The shipped track builder assigns endpoint positions from the same world-position inputs as its base nodes (lines 16,24,31-38). Retain edge and node positions separately; do not substitute missing values. |
+| `BaseEdge.roadType: RoadType`, `roadTemplate: ResName` | `engine.d.tl:124-127`; `api/type.d.tl:1954-1957` declares STREET and TRACK. `track_builder.tl:42-47` assigns the track template and `api.type["enum"].RoadType.TRACK`. No numeric enum values are used. `BaseEdge.type` concerns normal/bridge/tunnel geometry and is not the rail discriminator. |
+| `BaseNode.position: Vec3f` | `engine.d.tl:157-162` explicitly documents world coordinates. Vec3f x/y/z fields are copied to plain Lua numbers. |
+
+These contracts select a track-only map over enumerating every street edge or
+every base node. Each unique edge is still rechecked for existence, BASE_EDGE and
+the symbolic TRACK enum. No TF2 assumption or binding-function-type requirement
+is introduced. `BaseEdge.distance` is deliberately unused: its field declaration
+alone does not establish the desired geometric length semantics.
+
+### Station research: deferred
+
+`stationGroupSystem.getStationGroup(stationEntity)` and
+`getCarriers(stationGroup, stationIndex, terminalIndex)` are documented in
+`api/tealdef/api/engine/system.d.tl:87-102`. The shipped
+`gui.zip/gui/entity_window/make_entity_window.tl:57-70` requests `(-1,-1)` and
+checks `api.type["enum"].Carrier.RAIL` to label a station. That request returns
+group-level carrier information; it is not a verified rule for treating every
+station in a mixed group as rail.
+
+`stationSystem.getVehicleNodeId2StationTerminalsMap()` associates transport-network
+NodeIds with station/terminal pairs (`system.d.tl:57-82`). NodeId and EdgeId contain
+a TransportNetwork entity and a zero-based subindex (`api/type.d.tl:1148-1175`),
+not a directly interchangeable BASE_NODE/BASE_EDGE identifier. The missing verified
+contract is a conversion from a **rail-classified terminal's transport-network
+nodes/edges to its physical BASE_EDGE track entities**. No such usage was found
+in the searched shipped examples. `catchmentAreaSystem.getStation2edgesMap()`
+describes reachable edges, not station-owned track (`system.d.tl:437-441`).
+Consequently Phase 3C adds no station inventory or station-to-track mapping and
+logs this deferral explicitly. It does not classify every STATION as railway.
+
+## Railway lifecycle, graph and performance
+
+`rail_inventory.gs.lua` registers `rail_inventory.script@guiUpdate`. Its separate
+GUI callback uses the accepted valid-world/advancing-tick gate and reuses only
+`world()`/`seconds()` from the city adapter. No accepted file changes. Initial
+polling is first callback then every 30 callbacks, with a terminal abort after 60
+consecutive unavailable-world checks. A paused world waits without repeated logs.
+
+Discovery captures the node-to-track map once, deduplicates and sorts edge IDs,
+then processes **32 records every fourth GUI callback**: edges first, unique nodes
+second. A batch makes at most 64 entity/component reads plus the existing world
+check. Node requests include both indexed nodes and verified segment endpoints.
+Every batch validates the same world ID and nondecreasing tick. No queries run
+after completion/abort and no automatic retry occurs. Once the initial readiness
+gate passes, scanning can continue while paused; no game-speed command is issued.
+
+Limits are **20,000 unique segments, 40,000 nodes and 100,000 references/index
+entries**. Exceeding a limit aborts explicitly; no truncated graph is accepted as
+complete. Discovery's native map return, ID sorting and final graph normalization
+are synchronous once per scan. The API has no verified pagination contract here;
+the Lua limits cannot bound the native map allocation or its latency. Measure GUI
+latency in-game, particularly on large saves. Component reads are batched to limit
+per-callback work. Logs contain summaries and at most four diagnostic examples.
+
+The completed plain Lua result remains in this Game Script's
+`guiState:get().rail`, with `segments`, `nodes`, `adjacency`, counters, diagnostics,
+`status` and `complete`. Work arrays are released. Nothing is saved/exported.
+During collection the result is explicitly `status=scanning, complete=false`;
+abort retains `status=aborted, complete=false`, without an apparently complete
+graph. The session guard never uses engine state or GUI SaveData. Same-process
+reload of this new descriptor remains a required acceptance test.
+
+- Segment records: ID, node0/node1, separate position0/position1 `{x,y,z}`, template,
+  topologyValid, status and optional chordLength. Nodes: ID, position, degree, status.
+  Missing/nonfinite positions are nil, not zero. Zero and negative numbers survive.
+- Nodes/segments sort by numeric entity ID; each adjacency list sorts by segment
+  ID and contains `{segment, neighbor}` incidences. Both referenced BASE_NODEs must
+  exist before adding an edge to adjacency. Missing geometry does not invent a
+  position or erase otherwise verified topology; it makes the record incomplete.
+- Degree counts distinct incident segments (a self-loop counts once). Degree 1
+  gives an endpoint candidate; degree >=2 a multi-segment node; degree >=3 a
+  junction candidate. These do not establish permitted movements, switches, signals,
+  direction, ownership, track gauge compatibility or route availability.
+- Components are undirected connected components of the accepted adjacency,
+  including isolated available nodes. They are physical graph statistics only.
+  `graph_segments` can be lower than `segments` when endpoints are missing.
+- `duplicates` counts extra map references after the first reference to each edge;
+  an ordinary segment listed at both ends contributes one. This is normal and does
+  not degrade status. `rejected` counts malformed index entries/references or rejected
+  edge/node records. `incomplete` counts missing node records plus accepted node/edge
+  records with unavailable fields/errors (not a count of unique engine calls).
+- `isolated_nodes` counts available nodes with no accepted incidence; missing nodes
+  are reported separately. A rejected street edge never enters the segment graph.
+  `partial` means collection ended but data is incomplete; `complete=true` refers
+  to processing completion, not a claim that the graph is fully reliable.
+- Chord length is the 3D Euclidean distance between a segment's endpoint positions,
+  in world-coordinate units. The total covers `chord_segments` only and is **not
+  curved track length**, travel distance or cost. No fallback geometry is used.
+- A successful empty enumeration yields zero segments/nodes and `status=ok`.
+  An unavailable/invalid enumeration aborts instead of masquerading as an empty map.
+
+The map can change across batches; this is not an atomic engine snapshot. Avoid
+building/removing tracks during acceptance. Entity checks detect disappearance,
+but a successful result does not prove no concurrent modification occurred. The
+inventory covers documented base track segments, not an asserted complete model
+of station-internal transport networks. It never monitors later changes.
 
 ## Terrain contracts and source evidence
 
@@ -269,7 +389,7 @@ initialization/deduplication patterns. The code never writes engine state, calls
 `setGuiSaveData`, saves userdata or writes files. Public definitions do not
 explicitly guarantee GUI-state reset on every load path: same-process save reload
 is a mandatory acceptance test. There is no persistent engine-state completion
-flag. Repeat that acceptance test for the new terrain Game Script in Phase 3B.
+flag. Repeat that acceptance test for the new railway Game Script in Phase 3C.
 Tick advancement is an additional readiness condition, not a verified callback
 for the textual `Game is ready` log line; confirm actual timing in-game.
 
@@ -320,9 +440,9 @@ C:\Program Files (x86)\Steam\userdata\175442176\3493540\local\staging_area\oz_ra
 Keep `mod.json` directly inside that folder. Back up the old copy outside staging
 if desired; do not create another active copy with the same ID. Do not copy README,
 AGENTS or `.gitignore`. Do not modify the original game install or subscribed mods.
-The following command checks identity and copies only the four new terrain files
+The following command checks identity and copies only the four new railway files
 without recursive deletion or changes to saves. It requires the already installed,
-accepted city and industry files to match the workspace before copying. Existing
+accepted city, industry and terrain files to match the workspace before copying. Existing
 `_metadata` and `content` directories must remain in place. It does not overwrite those files,
 the manifest or metadata. These instructions have not been executed by the agent.
 
@@ -341,15 +461,17 @@ foreach ($rnaRoot in @($rnaSource, $rnaTarget)) {
     }
 }
 $rnaFiles = @(
-    'content\terrain_inventory.gs.lua', 'content\terrain_inventory.script.lua',
-    'content\terrain_inventory_api.lua', 'content\terrain_inventory_data.lua'
+    'content\rail_inventory.gs.lua', 'content\rail_inventory.script.lua',
+    'content\rail_inventory_api.lua', 'content\rail_inventory_data.lua'
 )
 $rnaBaseline = @(
     'mod.json', '_metadata\modinfo.json', 'content\mod.script.lua',
     'content\city_inventory.gs.lua', 'content\city_inventory.script.lua',
     'content\city_inventory_api.lua', 'content\city_inventory_data.lua',
     'content\industry_inventory.gs.lua', 'content\industry_inventory.script.lua',
-    'content\industry_inventory_api.lua', 'content\industry_inventory_data.lua'
+    'content\industry_inventory_api.lua', 'content\industry_inventory_data.lua',
+    'content\terrain_inventory.gs.lua', 'content\terrain_inventory.script.lua',
+    'content\terrain_inventory_api.lua', 'content\terrain_inventory_data.lua'
 )
 foreach ($rnaFile in $rnaBaseline) {
     $rnaSourceHash = (Get-FileHash -LiteralPath (Join-Path $rnaSource $rnaFile) -ErrorAction Stop).Hash
@@ -379,6 +501,66 @@ staging or launched TF3.
 
 ## Manual verification
 
+### Railway acceptance: two separate maps
+
+1. Close TF3 and use the guarded staging instructions above. Enable revision 1.
+2. **Empty network:** generate a disposable map with no railway construction.
+   Roads alone must not become railway segments. Briefly unpause after loading;
+   expect one railway scan with zero segments, nodes, endpoints, components,
+   incomplete and rejected counts, followed by `SCAN_COMPLETE status=ok`.
+   An enumeration failure is not an acceptable empty result.
+3. **Non-empty network:** load an existing test save with tracks, or use the normal
+   game UI to create a small railway layout in a disposable save, save it and reload
+   it so the once-only scanner sees the layout. The agent performs no construction
+   or save operations. Include a simple line, a branch and a separate disconnected
+   line if convenient; leave the layout unchanged during collection. Expect
+   positive segment/node counts and sensible endpoint/junction candidates and
+   disconnected components. Engine segment subdivision can differ from the number
+   of user drawing actions; do not expect one entity per drawn stroke. Station
+   internal paths and operational connectivity are not acceptance claims here.
+4. Wait for batches to finish. Confirm `SCAN_COMPLETE status=ok complete=true` and
+   zero incomplete/rejected records on an ordinary unchanged layout. Duplicate
+   references are expected from the node map; they are not scan errors. A partial
+   result requires review of diagnostics and missing-node/isolated counts.
+5. Confirm the accepted city, industry and terrain scans still complete. Continue
+   normal gameplay, pause and unpause: railway scanning must not repeat. Test
+   same-process save reload, menu-to-game load and fresh launch; each loaded session
+   should receive exactly one new railway scan. Compare summaries excluding duration
+   on an unchanged map. Observe GUI responsiveness while scanning.
+6. Retain `[RNA:RAIL:3C]` lines and any surrounding engine errors for review. Do not
+   proceed to planning. Zero segments on a visibly tracked map is a failed test.
+
+Expected empty-network output (illustrative, not runtime evidence):
+
+```text
+[RNA:RAIL:3C] WAIT_WORLD waiting_for_valid_world_and_tick_advance; unpause_to_scan
+[RNA:RAIL:3C] SCAN_START
+[RNA:RAIL:3C] DISCOVERY unique_segments=0 references=0 batch_size=32 callback_interval=4
+[RNA:RAIL:3C] SUMMARY segments=0 nodes=0 endpoints=0 junction_candidates=0 multi_segment_nodes=0 graph_segments=0 components=0 isolated_nodes=0 self_loops=0
+[RNA:RAIL:3C] VALIDATION duplicates=0 incomplete=0 rejected=0 missing_nodes=0
+[RNA:RAIL:3C] GEOMETRY chord_total=0.000000 chord_segments=0 measure=endpoint_distance_not_track_length
+[RNA:RAIL:3C] STATIONS status=deferred reason=station_terminal_to_base_edge_mapping_unverified
+[RNA:RAIL:3C] DURATION seconds=0.150000 clock=application_time includes_callback_waits=true
+[RNA:RAIL:3C] SCAN_COMPLETE status=ok complete=true
+```
+
+A hypothetical three-segment Y plus one separate segment could produce these
+summary lines (actual entity subdivision and counts depend on the game):
+
+```text
+[RNA:RAIL:3C] SUMMARY segments=4 nodes=6 endpoints=5 junction_candidates=1 multi_segment_nodes=1 graph_segments=4 components=2 isolated_nodes=0 self_loops=0
+[RNA:RAIL:3C] VALIDATION duplicates=4 incomplete=0 rejected=0 missing_nodes=0
+[RNA:RAIL:3C] SCAN_COMPLETE status=ok complete=true
+```
+
+Errors retain paths and original messages, for example:
+`DIAGNOSTIC detail="segment 123: api.engine.getComponent(123, BASE_EDGE): <runtime message>"`.
+At most four examples are printed; `DIAGNOSTICS_SUPPRESSED` reports the remaining
+count. Failed discovery/readiness/limits produce `SCAN_ABORTED`, progress counts
+and `SCAN_END status=aborted complete=false`, never a successful zero summary.
+
+### Accepted scanner regression checks
+
 1. Update staging, launch TF3 and confirm the mod is enabled as revision 1. Use a
    disposable test game and disable unrelated optional mods.
 2. Wait for loading to finish, then briefly unpause if necessary. Allow several
@@ -403,11 +585,11 @@ staging or launched TF3.
    must remain false, not missing. For an unchanged map, repeat after reload and
    compare terrain statistics excluding duration. Do not alter a valued map for tests.
 7. Exit normally and retain the relevant log excerpt before another launch can
-   replace it. Stop at Phase 3B for review; do not proceed to Phase 3C.
+   replace it. Stop at Phase 3C for review; do not proceed to network planning.
 
 ```powershell
 $rnaLog = 'C:\Program Files (x86)\Steam\userdata\175442176\3493540\local\crash_dump\stdout.txt'
-Select-String -LiteralPath $rnaLog -SimpleMatch '[RNA:CITY:2B]', '[RNA:IND:3A]', '[RNA:TERRAIN:3B]'
+Select-String -LiteralPath $rnaLog -SimpleMatch '[RNA:CITY:2B]', '[RNA:IND:3A]', '[RNA:TERRAIN:3B]', '[RNA:RAIL:3C]'
 ```
 
 Illustrative output; IDs, names, coordinates and time will vary:
@@ -460,34 +642,48 @@ cannot be read. It is not CPU profiling.
 
 | Symptom | Action |
 | --- | --- |
-| City/industry output only, no terrain marker | Check all four terrain files, references, activation and resource errors. Discovery alone is not execution. |
+| Accepted scanners run, no railway marker | Check all four rail files, references, activation and resource errors. Discovery alone is not execution. |
 | `WAIT_WORLD` only | Unpause. If still stuck while time advances, capture the build and log errors. |
 | `SCAN_ABORTED` or `SCAN_ERROR` | Capture the error, resolve it, then reload to retest. |
 | Repeated scans in one load, or no scan on same-process reload | Session-state lifecycle failed acceptance; stop and report it. |
 | `status=partial` or terrain `status=error` | Inspect the capped error details, counts and available-data denominators. |
 | Terrain SCAN_START without completion | Wait for batching to finish; inspect SCAN_ABORTED/SCAN_END and other script errors. |
+| Rail limit exceeded | The scan is explicitly aborted; retain the log and review before changing limits. |
+| Zero railway count on a visibly tracked map | Treat as a failure; inspect discovery, API errors and infrastructure coverage. Zero is valid only when no base track network is expected. |
 | Zero industry count on a map with industries | Treat as a failure; inspect enumeration and lifecycle timing. |
 | Repeated Phase 2A worker messages | Known bootstrap behavior; count each inventory prefix separately. |
 
-## Validation and unresolved risks
+## Development validation and unresolved risks
 
-Static checks passed for strict JSON parsing, metadata, UTF-8 without BOM, local
-resource/import references, callback exports, installed API symbol evidence and
-unchanged city/industry files, manifest, metadata and bootstrap versus b028a6e. Both
-PowerShell examples passed PowerShell parser validation without execution.
-Manual review covers empty maps, nil fields, zero
-coordinates, invalid entities, duplicates, sorting, readiness and terminal guards.
+Run the development-only checks from the repository root:
 
-No Lua interpreter/compiler or Lua parser was found in the checked local tooling.
-Lua syntax is manually reviewed, not compiler-validated. No dependencies were
-installed. The user verified both existing inventories in-game. Phase 3B registration,
-terrain data, batching performance and GUI-state lifetime on reload remain untested; the manual
-acceptance tests above are required. The public
-references do not expose a guaranteed `Game is ready` callback or explicit
-GUI-state reset contract for all load paths.
+```powershell
+Set-Location -LiteralPath 'D:\code\transport-fever-3\railway-architect'
+uv run --no-project --with lupa==2.8 python tests/run_lua_tests.py
+```
 
-City and industry scans run synchronously; terrain sampling uses bounded batches
-and summary logging. Actual callback latency still needs measurement in-game.
-These inventories do not track later map
-changes. No files in the original installation or saves were modified, and nothing
-was published, committed or pushed by the agent. Stop after Phase 3B for review.
+This uses Lua 5.4 through Lupa in uv's isolated cache; no mod dependency, project
+manifest or virtual environment is added. The runtime was obtained for these
+explicitly requested tests because no standalone Lua interpreter/compiler was
+available. With the cache populated, `--offline` can be added. Do not copy tests
+or Python/Lupa into staging. The Lua version is a development check, not a claim
+about TF3's embedded Lua version.
+
+Validation covers Lua syntax, local references/import targets, strict JSON and
+UTF-8 without BOM. Twenty executable synthetic tests cover all seven requested
+graph cases, negative/zero/nonfinite coordinates, missing data, limits, bounded
+diagnostics, API errors, symbolic track filtering, readiness, batching, once-only
+behavior and explicit aborts. Mocks exercise our logic; they do not verify native
+bindings or the engine's GUI-state lifetime. Final review also checks descriptor
+callback exports, unchanged accepted package files versus b262240, PowerShell
+example syntax and the absence of world-changing calls. No staging commands are
+executed during validation.
+
+The user verified the accepted city, industry and terrain inventories. Railway
+resource registration, actual native return values, coverage of special track
+layouts, latency and same-process reload behavior remain unverified until the
+manual tests above run. There is no proven atomic snapshot across GUI batches or
+station-terminal-to-base-edge mapping. The public definitions do not guarantee
+GUI-state reset on every load path. Nothing was changed in the original game,
+staging or saves; no commit, tag, push or publication was made. Stop after Phase
+3C implementation for review and real-game verification.

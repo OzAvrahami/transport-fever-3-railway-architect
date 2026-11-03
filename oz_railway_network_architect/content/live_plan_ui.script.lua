@@ -4,6 +4,7 @@ local area = ug_require "::/gui/main/main_mod_button_area.tl"
 local flow = ug_require "oz_railway_network_architect::/live_plan_data.lua"
 local preview = ug_require "oz_railway_network_architect::/live_plan_preview.lua"
 local networkData = ug_require "oz_railway_network_architect::/network_live_data.lua"
+local worklist = ug_require "oz_railway_network_architect::/network_worklist.lua"
 local eventId = "oz_railway_network_architect.plan"
 
 -- Native window content is instantiated by the game's window container, never in
@@ -57,6 +58,9 @@ local PlannerWindow = react.RegisterWrapperRecipe("OzRailwayNetworkArchitectWind
             end
             if value.networkSummary ~= nil and not networkData.valid(value.networkSummary, value) then
                 error("api.gui.fireGuiScriptEvent: invalid network summary", 0)
+            end
+            if value.worklist ~= nil and not worklist.valid(value.worklist, value) then
+                error("api.gui.fireGuiScriptEvent: invalid network worklist", 0)
             end
             if value.corridorOrigin ~= nil then
                 local o = value.corridorOrigin
@@ -246,7 +250,10 @@ local PlannerWindow = react.RegisterWrapperRecipe("OzRailwayNetworkArchitectWind
             if #networkSummary.links > 0 then
                 local items = {}
                 for _, link in ipairs(networkSummary.links) do
-                    items[#items + 1] = builtin.ComboBoxItem {value = link.id, content = text(link.label)}
+                    local entry = worklist.find(state.worklist, link.id)
+                    local suffix = entry and (" | " .. (entry.included and "included" or "excluded")
+                        .. " | " .. entry.actor .. (entry.furtherStudy and " | further study" or "")) or ""
+                    items[#items + 1] = builtin.ComboBoxItem {value = link.id, content = text(link.label .. suffix)}
                 end
                 children[#children + 1] = builtin.ComboBox {
                     meta = {class = "rna-planner-town"}, value = networkLink:old(), items = items,
@@ -263,11 +270,48 @@ local PlannerWindow = react.RegisterWrapperRecipe("OzRailwayNetworkArchitectWind
                 for _, line in ipairs(link and link.lines or {}) do children[#children + 1] = text(line) end
             end
         end
+        children[#children + 1] = text("Network Plan")
+        local plan = networkSummary and state.worklist or nil
+        local planEntry = worklist.find(plan, networkLink:old())
+        if plan then
+            for _, line in ipairs(plan.lines) do children[#children + 1] = text(line) end
+            if planEntry then
+                children[#children + 1] = text("Selected connection: " .. (planEntry.included and "included" or "excluded")
+                    .. " | Original proposal: " .. planEntry.classification .. " | Decision: " .. planEntry.actor
+                    .. " (" .. planEntry.action .. ") | Further study: " .. tostring(planEntry.furtherStudy))
+                children[#children + 1] = text("Original branch relationship: " .. planEntry.branchRelationship)
+            end
+        else children[#children + 1] = text(state.worklistError or "Run Analyze Network to create a session worklist.") end
+        local function editButton(label, action, all)
+            return builtin.Button {
+                content = text(label),
+                meta = {enabled = plan ~= nil and not state.busy and not transportFailed:get() and (all or planEntry ~= nil)},
+                onClick = function()
+                    if not isLive() or sending:get() or transportFailed:get() or not previewConfirmed:old() then return end
+                    local latest = current:get()
+                    if not plan or not latest or latest.busy or not latest.worklist
+                        or latest.world ~= state.world or latest.epoch ~= state.epoch
+                        or latest.worklist.snapshotId ~= plan.snapshotId or latest.worklist.networkRequestId ~= plan.networkRequestId
+                        or latest.worklist.revision ~= plan.revision then return end
+                    local edgeId = not all and networkLinkRef:get() or nil
+                    if not all and not worklist.find(latest.worklist, edgeId) then return end
+                    errorState:set("")
+                    send("plan", {world = latest.world, epoch = latest.epoch,
+                        worklist = {networkRequestId = plan.networkRequestId, snapshotId = plan.snapshotId,
+                            revision = plan.revision, action = action, edgeId = edgeId}})
+                end,
+            }
+        end
+        for _, item in ipairs({{"Include in plan", "include"}, {"Exclude from plan", "exclude"},
+            {"Restore original recommendation", "restore"}, {"Mark for further study", "mark_study"}}) do
+            children[#children + 1] = editButton(item[1], item[2], false)
+        end
+        children[#children + 1] = editButton("Reset all edits", "reset_all", true)
         local studyLink = networkData.find(networkSummary, networkLink:old())
         children[#children + 1] = builtin.Button {
             content = text("Study Corridor"),
             meta = {enabled = state.canStudy == true and not state.busy and not transportFailed:get()
-                and studyLink ~= nil and studyLink.recommended == true},
+                and studyLink ~= nil and studyLink.recommended == true and (not planEntry or planEntry.included)},
             onClick = function()
                 if not isLive() or sending:get() or transportFailed:get() or not previewConfirmed:old() then return end
                 local latest = current:get()
@@ -278,6 +322,8 @@ local PlannerWindow = react.RegisterWrapperRecipe("OzRailwayNetworkArchitectWind
                     or latest.networkSummary.snapshotId ~= networkSummary.snapshotId then return end
                 local link = networkData.find(latest.networkSummary, networkLinkRef:get())
                 if not link or not link.recommended then return end
+                local edited = worklist.find(latest.worklist, link.id)
+                if edited and not edited.included then return end
                 errorState:set(""); previewConfirmed:set(false)
                 send("plan", {world = latest.world, epoch = latest.epoch, requestId = latest.requestId + 1,
                     network = {requestId = latest.networkRequestId,

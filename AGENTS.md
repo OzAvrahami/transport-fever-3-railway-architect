@@ -2,12 +2,12 @@
 
 ## Current milestone
 
-Phase 5B.2 only: explicit handoff of a recommended network connection to the
-existing read-only corridor request pipeline. Preserve accepted local work, window styling, subscriptions, inventories
+Phase 5C.1 only: session-owned editable Network Plan over immutable topology
+recommendations, with the existing read-only corridor handoff preserved. Preserve accepted local work, window styling, subscriptions, inventories
 and corridor algorithms. No automatic network analysis or all-pairs terrain A*.
 World-space rendering remains unresolved; the panel is NOT a map overlay.
 No staging deployment, construction, speculative APIs, commits, tags or pushes.
-Stop after Phase 5B.2 for code review and native verification.
+Stop after Phase 5C.1 for code review and native verification.
 The authoritative planner remains content/planning/ inside the mod.
 
 Topology studies consider supplied demand evidence, distance, geography and transport
@@ -16,6 +16,25 @@ and actual construction remain unverified; scores are explicit planning preferen
 
 ## Development conventions
 
+- Network Plan owns only copied endpoint/classification references and separate
+  user overrides. Never mutate algorithm result scores, evidence or classifications.
+  Only algorithm-recommended links are editable; do not add arbitrary/deferred links.
+- Include/exclude changes membership; mark_study is an independent flag, never a
+  search trigger. Restore clears one override; reset_all clears all. Retain only
+  current user decisions (actor/action/revision/tick), not an unbounded edit history.
+- Use the existing plan event with a distinct worklist envelope, before corridor
+  token processing. No new subscription. Validate world/epoch/network snapshot and
+  expected revision; reject busy, stale and replayed operations atomically.
+- Recalculate the bounded proposal graph on accepted edits: components including
+  isolates, degrees/potential hubs, original-branch attachments, duplicate references
+  and independent cycles. Membership changes make original labels historical-only;
+  never assign verified new Mainline/Branch labels or force connectivity.
+- Worklists are at most 32 towns/31 proposed links. Clear on reanalysis, Refresh,
+  reload/world invalidation. Do not persist edits. Review edits may outlive the
+  60-second handoff age, but never refresh source evidence or bypass handoff checks.
+- Excluded recommendations cannot use Study Corridor. Manual Plan remains independent.
+  Capture the worklist revision/decision separately in corridor origin; later edits
+  must not rewrite a completed study or run another search.
 - Study Corridor uses the existing plan event with a network selector; do not add
   a subscription or parallel transport. Resolve IDs through the owner's recommended
   edges and canonical corridorRequest descriptor. Deferred/rejected edges are inert.

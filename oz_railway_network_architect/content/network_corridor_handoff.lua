@@ -2,6 +2,7 @@
 local core = ug_require "oz_railway_network_architect::/planning/network_planner.lua"
 local flow = ug_require "oz_railway_network_architect::/live_plan_data.lua"
 local read = ug_require "oz_railway_network_architect::/network_live_api.lua"
+local worklist = ug_require "oz_railway_network_architect::/network_worklist.lua"
 local handoff = {}
 local function copy(value)
     if type(value) ~= "table" then return value end
@@ -30,6 +31,12 @@ function handoff.prepare(state, selected)
         or selected.snapshotId ~= n.result.snapshotId or type(selected.edgeId) ~= "string" then
         return nil, "stale_network_recommendation; Analyze Network again"
     end
+    local decision
+    if state.worklist then
+        if not worklist.matches(state.worklist, state) then return nil, "stale_worklist_snapshot" end
+        decision = worklist.decision(state.worklist, selected.edgeId)
+        if decision and not decision.included then return nil, "connection_excluded_from_network_plan" end
+    end
     local descriptor, why = core.corridorRequest(n.result, selected.edgeId)
     if not descriptor then return nil, why end
     local edge
@@ -43,6 +50,8 @@ function handoff.prepare(state, selected)
         directDistance = edge.distance, evidence = copy(edge.evidence), reasons = copy(edge.reasons),
         limitations = copy(edge.limitations), infrastructure = copy(edge.infrastructure),
         snapshotStartTick = n.snapshot.startTick, snapshotEndTick = n.snapshot.endTick,
+        worklistDecision = decision and {revision = state.worklist.revision, decision = decision,
+            classificationInterpretation = state.worklist.graph.classificationInterpretation} or nil,
         checkedSeconds = now, constructionStatus = "unverified"}
 end
 
@@ -78,9 +87,12 @@ function handoff.presentation(r, state)
     if not o or r.requestId ~= state.requestId then return nil end
     return {world = o.world, epoch = o.epoch, requestId = r.requestId,
         lines = {"Corridor study from network #" .. o.networkRequestId .. ": " .. o.classification
-            .. " #" .. o.sourceId .. " -> #" .. o.destinationId .. ". Status: " .. (r.status or "planning"),
+            .. " #" .. o.sourceId .. " -> #" .. o.destinationId .. ". Status: " .. (r.status or "planning")
+            .. (o.worklistDecision and (" | Worklist revision " .. o.worklistDecision.revision .. " (historical)") or ""),
             "Original recommendation: " .. table.concat(o.reasons, ", "):gsub("_", " "),
             "Network provenance: " .. o.snapshotId .. ", ticks " .. o.snapshotStartTick .. "-" .. o.snapshotEndTick .. ".",
-            "Fresh terrain study; network evidence remains a historical snapshot. Construction and economic feasibility unverified."}}
+            "Fresh terrain study; network evidence remains a historical snapshot. Construction and economic feasibility unverified."
+                .. (o.worklistDecision and o.worklistDecision.classificationInterpretation == "historical_only_reassessment_required"
+                    and " Original Mainline/Branch interpretation requires reassessment after edits." or "")}}
 end
 return handoff

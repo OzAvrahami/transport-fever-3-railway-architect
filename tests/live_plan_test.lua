@@ -1940,4 +1940,180 @@ test("handoff: independent origin survives network replacement and copied GUI st
     assert(event("status").preview)
 end)
 
+local function editToken(gui, action, edgeId)
+    local s, w = gui:get(), gui:get().worklist
+    return {world = s.world, epoch = s.epoch, worklist = {snapshotId = w.snapshotId,
+        networkRequestId = w.networkRequestId, revision = w.revision, action = action, edgeId = edgeId}}
+end
+local function editNetwork(gui, event, action, edgeId) return event("plan", editToken(gui, action, edgeId)) end
+
+test("worklist: live result creates an independent session worklist without A*", function()
+    local gui, _, _, event = runNetwork(5)
+    local s = gui:get(); equal(s.worklist.revision, 0); equal(s.worklist.graph.included, 3)
+    equal(s.worklist.graph.unconnected[1], 5); equal(s.worklist.graph.hubs[1], 1)
+    equal(s.worklist.snapshotId, s.network.result.snapshotId); equal(heightReads, 0)
+    equal(event("status").worklist.entries[3].classification, "branch")
+    equal(logCount("REQUEST_START"), 0); equal(logCount("[RNA:WORKLIST:5C1] CREATE"), 1)
+end)
+
+test("worklist: sequential include exclude mark restore and reset preserve original evidence", function()
+    local gui, _, _, event = runNetwork(5)
+    local original = serialize(gui:get().network.result); local originalSummary = serialize(gui:get().network.summary)
+    assert(editNetwork(gui, event, "exclude", "1:4").accepted)
+    equal(gui:get().worklist.graph.included, 2); equal(#gui:get().worklist.graph.hubs, 0)
+    assert(editNetwork(gui, event, "mark_study", "1:4").accepted)
+    equal(gui:get().worklist.overrides['1:4'].included, false)
+    equal(gui:get().worklist.overrides['1:4'].furtherStudy, true)
+    assert(editNetwork(gui, event, "include", "1:4").accepted)
+    equal(gui:get().worklist.graph.included, 3)
+    equal(gui:get().worklist.overrides['1:4'].provenance.actor, "user")
+    assert(editNetwork(gui, event, "restore", "1:4").accepted)
+    equal(gui:get().worklist.graph.overrides, 0)
+    assert(editNetwork(gui, event, "exclude", "1:2").accepted)
+    assert(editNetwork(gui, event, "reset_all").accepted)
+    equal(gui:get().worklist.revision, 6); equal(gui:get().worklist.graph.included, 3)
+    equal(serialize(gui:get().network.result), original); equal(serialize(gui:get().network.summary), originalSummary)
+    equal(gui:get().requestId, 0); equal(gui:get().networkRequestId, 1); equal(heightReads, 0)
+end)
+
+test("worklist: replay and stale revision or snapshot operations are atomic", function()
+    local gui, _, _, event = runNetwork(4)
+    local token = editToken(gui, "exclude", "1:2"); assert(event("plan", token).accepted)
+    local previous = serialize(gui:get().worklist)
+    equal(event("plan", token).reason, "duplicate_or_stale_worklist_revision")
+    token = editToken(gui, "include", "1:2"); token.worklist.snapshotId = "obsolete"
+    equal(event("plan", token).reason, "stale_worklist_snapshot")
+    token = editToken(gui, "include", "1:2"); token.worklist.networkRequestId = 20
+    equal(event("plan", token).reason, "stale_worklist_snapshot")
+    token = editToken(gui, "include", "1:2"); token.world = -1
+    equal(event("plan", token).reason, "stale_session")
+    equal(serialize(gui:get().worklist), previous); equal(heightReads, 0)
+end)
+
+test("worklist: busy corridor and network jobs reject edits without consuming revision", function()
+    local gui, _, untilState, event = runNetwork(4)
+    local token = editToken(gui, "exclude", "1:2")
+    assert(study(gui, event, "1:4").accepted)
+    equal(event("plan", token).reason, "busy"); equal(gui:get().worklist.revision, 0)
+    untilState(completed); assert(event("plan", token).accepted)
+    token = editToken(gui, "include", "1:2")
+    assert(analyze(gui, event).accepted); equal(gui:get().worklist, nil)
+    equal(event("plan", token).reason, "busy"); untilState(networkDone)
+    equal(event("plan", token).reason, "stale_worklist_snapshot")
+    equal(gui:get().worklist.revision, 0)
+end)
+
+test("worklist: deferred links and ambiguous event payloads never execute planning", function()
+    local gui, _, _, event = runNetwork(5)
+    equal(editNetwork(gui, event, "include", "1:5").reason, "edge_not_in_worklist")
+    local token = editToken(gui, "exclude", "1:2"); token.sourceId = 1; token.destinationId = 2
+    equal(event("plan", token).reason, "invalid_worklist_envelope")
+    token = editToken(gui, "exclude", "1:2"); token.network = {edgeId = "1:2"}
+    equal(event("plan", token).reason, "invalid_worklist_envelope")
+    equal(event("analyzeNetwork", editToken(gui, "reset_all")).reason, "invalid_worklist_envelope")
+    equal(gui:get().worklist.revision, 0); equal(heightReads, 0); equal(gui:get().request, nil)
+end)
+
+test("worklist: reload and Refresh remove edits and cannot accept old operations", function()
+    local gui, step, untilState, event, _, cb = runNetwork(4)
+    assert(editNetwork(gui, event, "exclude", "1:4").accepted)
+    local token = editToken(gui, "include", "1:4")
+    cb.guiHandleEvent(nil, nil, gui, "native", "gameUI", "reactPostInit", {})
+    equal(gui:get().worklist, nil); equal(event("plan", token).reason, "stale_session")
+    ready(step, untilState); analyze(gui, event); untilState(networkDone)
+    assert(editNetwork(gui, event, "mark_study", "1:2").accepted)
+    assert(event("refresh").accepted); equal(gui:get().worklist, nil)
+    equal(event("status").worklist, nil)
+end)
+
+test("worklist: world invalidation removes the worklist while copied state preserves valid edits", function()
+    local gui, step, _, event = runNetwork(4)
+    local set = gui.set
+    local function copy(v)
+        if type(v) ~= "table" then assert(type(v) ~= "function"); return v end
+        local out = {}; for k, value in pairs(v) do out[k] = copy(value) end; return out
+    end
+    gui.set = function(self, value) set(self, copy(value)) end
+    assert(editNetwork(gui, event, "exclude", "1:4").accepted)
+    assert(editNetwork(gui, event, "mark_study", "1:2").accepted)
+    equal(gui:get().worklist.graph.overrides, 2)
+    worldId = 123; event("status"); equal(gui:get().worklist, nil); equal(heightReads, 0)
+end)
+
+test("worklist: exclusion blocks Study Corridor, restore preserves it and original provenance", function()
+    local gui, _, untilState, event = runNetwork(4)
+    assert(editNetwork(gui, event, "exclude", "1:4").accepted)
+    equal(study(gui, event, "1:4").reason, "connection_excluded_from_network_plan")
+    equal(heightReads, 0)
+    assert(editNetwork(gui, event, "restore", "1:4").accepted)
+    assert(editNetwork(gui, event, "exclude", "1:2").accepted)
+    assert(study(gui, event, "1:4").accepted); untilState(completed)
+    equal(gui:get().request.networkOrigin.classification, "branch")
+    equal(gui:get().request.networkOrigin.worklistDecision.revision, 3)
+    equal(gui:get().request.networkOrigin.worklistDecision.classificationInterpretation, "historical_only_reassessment_required")
+    assert(event("status").corridorOrigin.lines[4]:find("requires reassessment", 1, true))
+    local before = heightReads; assert(editNetwork(gui, event, "reset_all").accepted)
+    equal(gui:get().request.networkOrigin.worklistDecision.revision, 3); equal(heightReads, before)
+    assert(submit(gui, event, 4, 1).accepted); untilState(completed); equal(gui:get().request.networkOrigin, nil)
+end)
+
+test("worklist: review edits do not refresh an expired world snapshot or automatically search", function()
+    local gui, _, _, event = runNetwork(4); clock = clock + 61
+    equal(event("status").canStudy, false)
+    assert(editNetwork(gui, event, "mark_study", "1:4").accepted)
+    equal(event("status").canStudy, false); equal(gui:get().networkRequestId, 1)
+    equal(heightReads, 0); equal(gui:get().requestId, 0)
+end)
+
+test("worklist: UI edits keep selection, original reasons and styles while updating plan summary", function()
+    local gui, _, _, event = runNetwork(5)
+    local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
+    assert(panelText(tree):find("Network Plan", 1, true))
+    local combo = find(tree, "ComboBox")
+    combo[1].params.onValueChange("3"); combo[2].params.onValueChange("2"); combo[3].params.onValueChange("1:4")
+    tree = render(); local button = find(tree, "Button", "Exclude from plan")[1]
+    assert(button.params.meta.enabled); button.params.onClick(); button.params.onClick(); tree = render()
+    equal(gui:get().worklist.revision, 1); equal(gui:get().worklist.graph.excluded, 1)
+    equal(find(tree, "Button", "Study Corridor")[1].params.meta.enabled, false)
+    assert(panelText(tree):find("historical only", 1, true)); assert(panelText(tree):find("Residential capacity:", 1, true))
+    equal(find(tree, "ComboBox")[1].params.value, "3"); equal(find(tree, "ComboBox")[2].params.value, "2")
+    equal(find(tree, "ComboBox")[3].params.value, "1:4")
+    find(tree, "Button", "Mark for further study")[1].params.onClick(); tree = render()
+    equal(gui:get().worklist.graph.furtherStudy, 1)
+    find(tree, "Button", "Restore original recommendation")[1].params.onClick(); tree = render()
+    equal(find(tree, "Button", "Study Corridor")[1].params.meta.enabled, true)
+    equal(gui:get().worklist.graph.overrides, 0); equal(heightReads, 0)
+    equal(controls.events[#controls.events].name, "oz_railway_network_architect.plan.plan")
+    equal(controls.panel.params.initialX, 0.5); equal(controls.panel.params.initialY, 0.5)
+    find(tree, "ComboBox")[3].params.onValueChange("1:5"); tree = render()
+    equal(find(tree, "Button", "Include in plan")[1].params.meta.enabled, false)
+end)
+
+test("worklist: stale UI actions, close and reopen cannot replay edits", function()
+    local gui, _, untilState, event = runNetwork(4)
+    local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
+    local oldClick = find(tree, "Button", "Exclude from plan")[1].params.onClick
+    oldClick(); tree = render(); oldClick(); render(); equal(gui:get().worklist.revision, 1)
+    controls.panel.params.onClose(); render(); controls.launcher.params.onClick(); tree = render()
+    equal(gui:get().worklist.revision, 1); assert(panelText(tree):find("Excluded: 1", 1, true))
+    local pending = find(tree, "Button", "Reset all edits")[1].params.onClick
+    controls.autoJoin = false; pending(); controls.panel.params.onClose(); controls.flush()
+    equal(gui:get().worklist.revision, 1)
+    controls.autoJoin = true; render(); controls.launcher.params.onClick(); tree = render()
+    local obsolete = find(tree, "Button", "Reset all edits")[1].params.onClick
+    analyze(gui, event); untilState(networkDone); poll(); render(); obsolete(); render()
+    equal(gui:get().worklist.revision, 0)
+end)
+
+test("worklist: malformed response pauses polling and explicit Refresh removes stale edits", function()
+    local gui = runNetwork(4)
+    local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
+    controls.resultFilter = function(v) v.worklist.epoch = -1; return v end
+    poll(); tree = render(); local count = #controls.events; poll(); poll(); equal(#controls.events, count)
+    equal(find(tree, "Button", "Exclude from plan")[1].params.meta.enabled, false)
+    controls.resultFilter = nil
+    find(tree, "Button", "Refresh towns")[1].params.onClick(); render()
+    equal(gui:get().worklist, nil); equal(heightReads, 0)
+end)
+
 print("PASS " .. passed .. " live planning/UI tests (mocked engine and React, not TF3 runtime verification)")

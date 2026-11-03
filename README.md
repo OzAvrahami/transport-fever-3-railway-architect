@@ -1,6 +1,25 @@
 # Railway Network Architect
 
-**Phase 5B.2: network recommendation to corridor handoff (awaiting native verification).**
+**Phase 5C.1: editable Network Plan (awaiting native verification).**
+
+After **Analyze Network**, select a proposed connection and use **Include in plan**,
+**Exclude from plan**, **Restore original recommendation**, or **Mark for further
+study**. **Reset all edits** restores all algorithm recommendations. The original
+scores, classifications, reasons and evidence remain intact; user overrides are
+session-local and shown separately.
+
+The Network Plan section recalculates included/excluded counts, components,
+unconnected towns, potential hubs and original branch attachments. Membership
+changes carry a warning that original Mainline/Branch interpretation needs reassessment.
+Edits never run A*. Included recommendations retain explicit **Study Corridor**;
+manual town-pair planning is unchanged. Deferred/rejected links remain informational.
+
+Edits clear on reanalysis, Refresh or map/session reset. They are not saved. Reviewing
+an older snapshot does not extend its 60-second corridor-handoff freshness policy.
+See the [Phase 5C.1 ownership, editing contract, tests and native acceptance report](docs/phase_5c1_network_worklist.md).
+No staging deployment, commits, tags, pushes or revision changes. Stop for review.
+
+**Phase 5B.2 background: network recommendation to corridor handoff.**
 
 Run **Analyze Network**, select a recommended Mainline or Branch connection, then
 click **Study Corridor**. Only that explicit action starts fresh terrain collection
@@ -120,9 +139,9 @@ uv run --no-project --offline --with lupa==2.8 python tests/run_lua_tests.py
 ```
 
 The suite includes 22 original planning tests, 20 railway tests, 20 hierarchical
-planning tests, 6 pure preview tests, 25 topology tests and 108 live-planning/UI tests
-(201 total). Static checks cover 44 Lua files. Mock tests do not prove native rendering
-or callback latency. Stop after Phase 5B.2 for code review.
+planning tests, 6 pure preview tests, 25 topology tests, 10 pure worklist tests and 120 live-planning/UI tests
+(223 total). Static checks cover 46 Lua files. Mock tests do not prove native rendering
+or callback latency. Stop after Phase 5C.1 for code review.
 
 ## Phase 4A planning core
 
@@ -149,10 +168,10 @@ sites, and railway adjacency does not establish operational routing. The prototy
 owns its local snapshot and reports these limits; it does not validate construction.
 
 Run `uv run --no-project --offline --with lupa==2.8 python tests/run_lua_tests.py`.
-This reuses the existing cached development runtime. The suite covers 201 tests
+This reuses the existing cached development runtime. The suite covers 223 tests
 across core planning, hierarchy, railway, presentation and live/UI behavior, and prints a
 three-corridor synthetic comparison. **Do not copy tests or repository documentation
-into staging. Stop after Phase 5B.2 for code review.**
+into staging. Stop after Phase 5C.1 for code review.**
 
 ## Documented API invocation correction
 

@@ -4,6 +4,7 @@ local request = ug_require "oz_railway_network_architect::/live_plan_request.lua
 local preview = ug_require "oz_railway_network_architect::/live_plan_preview.lua"
 local network = ug_require "oz_railway_network_architect::/network_live_request.lua"
 local handoff = ug_require "oz_railway_network_architect::/network_corridor_handoff.lua"
+local worklist = ug_require "oz_railway_network_architect::/network_worklist.lua"
 local config = flow.config()
 local eventId = "oz_railway_network_architect.plan"
 local prefix = "[RNA:PLAN:4B2] "
@@ -37,7 +38,7 @@ end
 
 local function startCatalog(state)
     state.catalog = {cursor = 1, towns = {}, rejected = 0, errors = 0}
-    state.towns, state.request, state.network = {}, nil, nil
+    state.towns, state.request, state.network, state.worklist, state.worklistError = {}, nil, nil, nil, nil
     state.listVersion = state.listVersion + 1
     state.status, state.message = "loading", "Loading town list..."
 end
@@ -96,6 +97,8 @@ local function response(state, accepted, reason)
         networkSummary = state.network and state.network.summary or nil,
         canStudy = studyReady and not busy(state) and state.ready == true and state.catalog == nil,
         studyReason = studyReason,
+        worklist = worklist.matches(state.worklist, state) and worklist.summary(state.worklist) or nil,
+        worklistError = state.worklistError,
         corridorOrigin = handoff.presentation(r, state),
         canPlan = state.ready == true and state.catalog == nil and #towns >= 2
             and (state.status ~= "error" or (r ~= nil and r.finished)),
@@ -164,7 +167,14 @@ local function update(state)
             end
         end
     end
-    if state.network and not state.network.finished then network.step(state.network) end
+    if state.network and not state.network.finished then
+        network.step(state.network)
+        if state.network.finished and state.network.status == "ok" then
+            state.worklist, state.worklistError = worklist.create(state.network.result, state)
+            debugPrint("[RNA:WORKLIST:5C1] CREATE network=" .. state.networkRequestId
+                .. " status=" .. (state.worklist and "ok" or flow.text(state.worklistError)))
+        end
+    end
     return state
 end
 
@@ -236,11 +246,28 @@ function data()
                 if type(param) ~= "table" or param.world ~= state.world or param.epoch ~= state.epoch then
                     reason = "stale_session"; return
                 end
+                if param.worklist ~= nil then
+                    if name ~= "plan" or param.network ~= nil or param.sourceId ~= nil or param.destinationId ~= nil then
+                        reason = "invalid_worklist_envelope"; return
+                    end
+                    if not state.ready or state.catalog or not worklist.matches(state.worklist, state) then
+                        reason = "stale_or_unavailable_worklist"; return
+                    end
+                    local edited
+                    edited, reason = worklist.edit(state.worklist, param.worklist, state.tick)
+                    if not edited then return end
+                    state.worklist = edited
+                    debugPrint("[RNA:WORKLIST:5C1] EDIT network=" .. state.networkRequestId
+                        .. " revision=" .. edited.revision .. " action=" .. param.worklist.action
+                        .. " included=" .. edited.graph.included .. " components=" .. #edited.graph.components)
+                    accepted = true; return
+                end
                 if name == "analyzeNetwork" then
                     if not flow.id(param.requestId) or param.requestId ~= state.networkRequestId + 1 then
                         reason = "duplicate_or_stale_network_request"; return
                     end
                     if not state.ready or state.catalog then reason = "not_ready"; return end
+                    state.worklist, state.worklistError = nil, nil
                     state.networkRequestId = param.requestId
                     state.network = network.start({id = state.world, tick = state.tick}, state.epoch, param.requestId)
                     accepted = true; return

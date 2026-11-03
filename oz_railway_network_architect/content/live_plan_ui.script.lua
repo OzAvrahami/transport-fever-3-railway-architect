@@ -58,6 +58,16 @@ local PlannerWindow = react.RegisterWrapperRecipe("OzRailwayNetworkArchitectWind
             if value.networkSummary ~= nil and not networkData.valid(value.networkSummary, value) then
                 error("api.gui.fireGuiScriptEvent: invalid network summary", 0)
             end
+            if value.corridorOrigin ~= nil then
+                local o = value.corridorOrigin
+                if type(o) ~= "table" or o.world ~= value.world or o.epoch ~= value.epoch
+                    or o.requestId ~= value.requestId or type(o.lines) ~= "table" or #o.lines ~= 4 then
+                    error("api.gui.fireGuiScriptEvent: invalid corridor origin", 0)
+                end
+                for _, line in ipairs(o.lines) do
+                    if type(line) ~= "string" or #line > 1600 then error("invalid corridor origin text", 0) end
+                end
+            end
             local old = current:get()
             local linkId = networkLinkRef:get()
             if not old or old.world ~= value.world or old.epoch ~= value.epoch
@@ -204,6 +214,9 @@ local PlannerWindow = react.RegisterWrapperRecipe("OzRailwayNetworkArchitectWind
         children[#children + 1] = text(errorState:old() ~= "" and errorState:old() or state.message)
         children[#children + 1] = text("Approximate town anchors. Corridors are not construction-ready.")
         children[#children + 1] = text("Work timing resolution is unverified; zero readings do not mean zero cost.")
+        if previewConfirmed:old() and not transportFailed:get() and state.corridorOrigin then
+            for _, line in ipairs(state.corridorOrigin.lines) do children[#children + 1] = text(line) end
+        end
         children[#children + 1] = text("Corridor summary (in-panel only; not a map overlay)")
         local summary = previewConfirmed:old() and not transportFailed:get() and state.preview or nil
         if summary then
@@ -250,6 +263,28 @@ local PlannerWindow = react.RegisterWrapperRecipe("OzRailwayNetworkArchitectWind
                 for _, line in ipairs(link and link.lines or {}) do children[#children + 1] = text(line) end
             end
         end
+        local studyLink = networkData.find(networkSummary, networkLink:old())
+        children[#children + 1] = builtin.Button {
+            content = text("Study Corridor"),
+            meta = {enabled = state.canStudy == true and not state.busy and not transportFailed:get()
+                and studyLink ~= nil and studyLink.recommended == true},
+            onClick = function()
+                if not isLive() or sending:get() or transportFailed:get() or not previewConfirmed:old() then return end
+                local latest = current:get()
+                -- Retained callbacks must not launch a different/newer recommendation.
+                if not latest or latest.busy or not latest.canStudy or latest.world ~= state.world
+                    or latest.epoch ~= state.epoch or latest.networkRequestId ~= state.networkRequestId
+                    or not networkSummary or not latest.networkSummary
+                    or latest.networkSummary.snapshotId ~= networkSummary.snapshotId then return end
+                local link = networkData.find(latest.networkSummary, networkLinkRef:get())
+                if not link or not link.recommended then return end
+                errorState:set(""); previewConfirmed:set(false)
+                send("plan", {world = latest.world, epoch = latest.epoch, requestId = latest.requestId + 1,
+                    network = {requestId = latest.networkRequestId,
+                        snapshotId = latest.networkSummary.snapshotId, edgeId = link.id}})
+            end,
+        }
+        if networkSummary and state.studyReason then children[#children + 1] = text(state.studyReason) end
         return builtin.Window {
             meta = {class = "rna-planner-window"},
             id = "oz_railway_network_architect.plan.window",

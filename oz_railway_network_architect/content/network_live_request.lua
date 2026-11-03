@@ -113,7 +113,7 @@ local function work(r)
         r.result = planner.plan(r.input)
         if r.result.status ~= "ok" then error("network input rejected: " .. r.result.status, 0) end
         r.snapshot = {world = r.world, startTick = r.startTick, endTick = r.tick,
-            source = r.input.source, towns = r.input.towns,
+            source = r.input.source, towns = r.input.towns, entityIds = r.ids,
             industrySource = r.input.industries and r.input.industries.source,
             railSource = r.input.rail and r.input.rail.source,
             railNodes = r.input.rail and #r.input.rail.nodes,

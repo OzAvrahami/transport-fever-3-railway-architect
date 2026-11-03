@@ -3,6 +3,7 @@ local flow = ug_require "oz_railway_network_architect::/live_plan_data.lua"
 local request = ug_require "oz_railway_network_architect::/live_plan_request.lua"
 local preview = ug_require "oz_railway_network_architect::/live_plan_preview.lua"
 local network = ug_require "oz_railway_network_architect::/network_live_request.lua"
+local handoff = ug_require "oz_railway_network_architect::/network_corridor_handoff.lua"
 local config = flow.config()
 local eventId = "oz_railway_network_architect.plan"
 local prefix = "[RNA:PLAN:4B2] "
@@ -82,6 +83,7 @@ end
 
 local function response(state, accepted, reason)
     local r = state.request
+    local studyReady, studyReason = handoff.available(state, adapter.seconds())
     local towns = {}
     for _, town in ipairs(state.towns) do towns[#towns + 1] = {id = town.id, name = town.name} end
     return {epoch = state.epoch, world = state.world, tick = state.tick, listVersion = state.listVersion,
@@ -92,10 +94,13 @@ local function response(state, accepted, reason)
         networkStatus = state.network and state.network.status or "idle",
         networkMessage = state.network and state.network.message or "No network analysis requested.",
         networkSummary = state.network and state.network.summary or nil,
+        canStudy = studyReady and not busy(state) and state.ready == true and state.catalog == nil,
+        studyReason = studyReason,
+        corridorOrigin = handoff.presentation(r, state),
         canPlan = state.ready == true and state.catalog == nil and #towns >= 2
             and (state.status ~= "error" or (r ~= nil and r.finished)),
         candidates = r and r.result and #r.result.candidates or 0,
-        preview = r and preview.valid(r.preview, state) and r.preview or nil}
+        preview = not busy(state) and r and preview.valid(r.preview, state) and r.preview or nil}
 end
 
 local function update(state)
@@ -244,23 +249,40 @@ function data()
                 if not state.ready or state.catalog or (state.status == "error" and not state.request) then reason = "not_ready"; return end
                 -- Consume the click token even on validation failure; replay cannot restart work.
                 state.requestId = param.requestId
-                if not flow.id(param.sourceId) or not flow.id(param.destinationId) then reason = "invalid_selected_ids"; return end
-                if param.sourceId == param.destinationId then reason = "same_town"; return end
+                local sourceId, destinationId, origin = param.sourceId, param.destinationId, nil
+                if param.network ~= nil then
+                    origin, reason = handoff.prepare(state, param.network)
+                    if not origin then return end
+                    sourceId, destinationId = origin.sourceId, origin.destinationId
+                end
+                if not flow.id(sourceId) or not flow.id(destinationId) then reason = "invalid_selected_ids"; return end
+                if sourceId == destinationId then reason = "same_town"; return end
                 local seen = {}
                 for _, town in ipairs(state.towns) do seen[town.id] = true end
-                if not seen[param.sourceId] or not seen[param.destinationId] then reason = "selection_not_in_town_list"; return end
-                local source, destination = adapter.town(param.sourceId), adapter.town(param.destinationId)
+                if not seen[sourceId] or not seen[destinationId] then reason = "selection_not_in_town_list"; return end
+                local source, destination = adapter.town(sourceId), adapter.town(destinationId)
                 for _, town in ipairs({source, destination}) do
                     if town.error then report("ENDPOINT_ERROR id=" .. town.id .. " detail=" .. flow.text(town.error)) end
                 end
+                local bounds = adapter.bounds()
                 local pair, invalid = flow.selected({source, destination},
-                    adapter.bounds(), param.sourceId, param.destinationId)
+                    bounds, sourceId, destinationId)
                 if not pair then reason = invalid; return end
+                if origin then
+                    reason = handoff.validate(state, origin, source, destination, bounds)
+                    if reason then return end
+                end
                 local world = adapter.world()
                 if flow.worldChanged(state, world) then state = reset(state, "world_changed_during_request"); reason = "stale_session"; return end
-                state.request = request.start(world, param.sourceId, param.destinationId, param.requestId)
+                state.request = request.start(world, sourceId, destinationId, param.requestId)
+                state.request.networkOrigin = origin
+                if origin then
+                    debugPrint("[RNA:HANDOFF:5B2] START request=" .. param.requestId
+                        .. " network=" .. origin.networkRequestId .. " edge=" .. origin.edgeId
+                        .. " classification=" .. origin.classification .. " snapshot=" .. origin.snapshotId)
+                end
                 state.status, state.message = "planning", "Planning in progress. See log for diagnostics."
-                report("REQUEST_START request=" .. param.requestId .. " source_id=" .. param.sourceId .. " destination_id=" .. param.destinationId)
+                report("REQUEST_START request=" .. param.requestId .. " source_id=" .. sourceId .. " destination_id=" .. destinationId)
                 accepted = true
             end)
             if not ok then reason = flow.text(detail) end

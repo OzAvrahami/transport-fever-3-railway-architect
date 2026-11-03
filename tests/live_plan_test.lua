@@ -1719,4 +1719,225 @@ test("network: rail reads are sliced, maximum supported graph remains bounded", 
     print(string.format("NETWORK MOCK STRESS callbacks=%d cpu_seconds=%.6f nodes=4096 segments=8192 pairs=496 (not native timing)", steps, os.clock() - started))
 end)
 
+test("handoff audit: network analysis after completed corridor never sends a busy corridor preview", function()
+    local gui, _, untilState, event = runNetwork(4)
+    assert(submit(gui, event, 1, 4).accepted); untilState(completed)
+    assert(event("status").preview)
+    assert(analyze(gui, event).accepted)
+    local value = event("status")
+    equal(value.busy, true); equal(value.preview, nil)
+    local render, _, tree = mountUI()
+    find(tree, "Button", "Railway Network Architect")[1].params.onClick(); render()
+    equal(logCount("UI_ERROR"), 0)
+end)
+
+local function studyToken(gui, edgeId)
+    local s = gui:get()
+    return {world = s.world, epoch = s.epoch, requestId = s.requestId + 1,
+        network = {requestId = s.networkRequestId, snapshotId = s.network.result.snapshotId, edgeId = edgeId}}
+end
+local function study(gui, event, edgeId) return event("plan", studyToken(gui, edgeId)) end
+
+test("handoff: mainline and branch use canonical endpoints and preserve independent evidence", function()
+    for _, example in ipairs({{"1:2", "mainline", 2}, {"1:4", "branch", 4}}) do
+        local gui, _, untilState, event = runNetwork(4)
+        local original = serialize(gui:get().network.result)
+        local response = study(gui, event, example[1]); assert(response.accepted, response.reason)
+        equal(heightReads, 0); equal(gui:get().request.sourceId, 1); equal(gui:get().request.destinationId, example[3])
+        equal(gui:get().request.networkOrigin.classification, example[2])
+        equal(gui:get().request.networkOrigin.evidence.demandSupport, nil)
+        untilState(completed); equal(gui:get().request.status, "ok")
+        assert(heightReads > 0); assert(event("status").preview)
+        equal(event("status").preview.source.id, 1); equal(event("status").preview.destination.id, example[3])
+        equal(serialize(gui:get().network.result), original)
+        equal(gui:get().request.networkOrigin.constructionStatus, "unverified")
+        assert(event("status").corridorOrigin.lines[4]:find("unverified", 1, true))
+    end
+end)
+
+test("handoff: deferred, rejected, unknown and malformed selections never sample terrain", function()
+    local gui, _, _, event = runNetwork(5)
+    for _, edge in ipairs({"1:5", "2:3", "999:1000"}) do
+        local response = study(gui, event, edge)
+        equal(response.accepted, false); equal(response.reason, "edge_not_recommended")
+    end
+    local token = studyToken(gui, "1:2"); token.network = false
+    equal(event("plan", token).accepted, false); equal(heightReads, 0); equal(gui:get().request, nil)
+end)
+
+test("handoff: busy, replay, sequential studies and manual requests share one corridor token", function()
+    local gui, _, untilState, event = runNetwork(4)
+    local token = studyToken(gui, "1:4")
+    assert(event("plan", token).accepted); equal(event("plan", token).reason, "busy")
+    equal(analyze(gui, event).reason, "busy"); untilState(completed)
+    equal(event("plan", token).reason, "duplicate_or_stale_request")
+    assert(study(gui, event, "1:2").accepted); untilState(completed)
+    equal(gui:get().requestId, 2); equal(logCount("[RNA:HANDOFF:5B2] START"), 2)
+    assert(submit(gui, event, 4, 1).accepted); untilState(completed)
+    equal(gui:get().request.networkOrigin, nil); equal(event("status").corridorOrigin, nil)
+    equal(gui:get().request.sourceId, 4); equal(gui:get().request.destinationId, 1)
+end)
+
+test("handoff: old network request and snapshot identities cannot select a replacement result", function()
+    local gui, _, untilState, event = runNetwork(4)
+    local old = studyToken(gui, "1:2")
+    assert(analyze(gui, event).accepted); untilState(networkDone)
+    equal(event("plan", old).accepted, false)
+    local token = studyToken(gui, "1:2"); token.network.snapshotId = "wrong"
+    equal(event("plan", token).accepted, false); equal(heightReads, 0)
+    equal(gui:get().request, nil)
+end)
+
+test("handoff: age, reversed clock and unavailable timing reject with no automatic refresh", function()
+    for _, mode in ipairs({"expired", "backwards", "missing"}) do
+        local gui, _, _, event = runNetwork(4)
+        if mode == "expired" then clock = clock + 61
+        elseif mode == "backwards" then clock = 0
+        else api.util.getApplicationTime = function() return nil end end
+        equal(event("status").canStudy, false)
+        equal(study(gui, event, "1:2").accepted, false); equal(heightReads, 0)
+        equal(gui:get().networkRequestId, 1); equal(gui:get().request, nil)
+    end
+end)
+
+test("handoff: deleted entities and removed TOWN components are rejected", function()
+    for _, mode in ipairs({"deleted", "component"}) do
+        local gui, _, _, event = runNetwork(4)
+        if mode == "deleted" then entities[2] = nil else
+            local component = api.engine.getComponent
+            api.engine.getComponent = function(id, kind)
+                if id == 2 and kind == "town" then return nil end
+                return component(id, kind)
+            end
+        end
+        equal(study(gui, event, "1:2").accepted, false); equal(heightReads, 0)
+    end
+end)
+
+test("handoff: position, capacity, index and bounds changes reject stale recommendations", function()
+    for _, change in ipairs({function() entities[2].x = -3999 end,
+        function() entities[2].capacity = 2001 end,
+        function() entities[2].capacity = nil end,
+        function() ids[#ids + 1] = 123 end,
+        function() mapBounds.maxX = 49000 end}) do
+        local gui, _, _, event = runNetwork(4); change()
+        local response = study(gui, event, "1:2")
+        equal(response.accepted, false); assert(response.reason:find("network_", 1, true))
+        equal(heightReads, 0); equal(gui:get().request, nil)
+    end
+end)
+
+test("handoff: world reload clears provenance and stale request cannot launch work", function()
+    local gui, step, untilState, event, _, cb = runNetwork(4)
+    local token = studyToken(gui, "1:2")
+    assert(event("plan", token).accepted); step(20); local old = gui:get().request
+    cb.guiHandleEvent(nil, nil, gui, "native", "gameUI", "reactPostInit", {})
+    equal(old.status, "invalidated"); equal(gui:get().request, nil); equal(gui:get().network, nil)
+    equal(event("status").corridorOrigin, nil); equal(event("plan", token).reason, "stale_session")
+end)
+
+test("handoff: 8000-unit recommendation uses existing hierarchy and fresh terrain", function()
+    local gui, _, untilState, event = runNetwork(2, function() entities[2].x = -8000 end)
+    equal(heightReads, 0); assert(study(gui, event, "1:2").accepted); untilState(completed)
+    equal(gui:get().request.status, "ok"); assert(gui:get().request.hierarchy)
+    assert(event("status").preview.candidates[1].sections > 1)
+    equal(gui:get().request.networkOrigin.directDistance, 8000)
+end)
+
+test("handoff: unsupported, unreachable and search-limit remain accurate without summaries or retries", function()
+    for _, mode in ipairs({"unsupported", "unreachable", "search_limit"}) do
+        local gui, step, untilState, event = newSession(mode == "search_limit" and {maxExpansions = 1} or nil)
+        networkFixture(2)
+        entities[2].x, entities[2].y = 0, 1500
+        if mode == "unsupported" then
+            mapBounds = {minX = 10, maxX = 20, minY = -100, maxY = 1600}
+            entities[1].x, entities[2].x = 15, 15
+        elseif mode == "unreachable" then api.engine.terrain.isOnWater = function(p) return p.y > 400 and p.y < 800 end end
+        ready(step, untilState); analyze(gui, event); untilState(networkDone)
+        assert(study(gui, event, "1:2").accepted); untilState(completed)
+        equal(gui:get().request.status, mode); equal(event("status").preview, nil)
+        assert(event("status").corridorOrigin.lines[1]:find(mode, 1, true))
+        local count = heightReads; step(100); equal(heightReads, count)
+        equal(logCount("[RNA:HANDOFF:5B2] START"), 1)
+    end
+end)
+
+test("handoff: changed world during validation and work budget breach never start a corridor", function()
+    for _, mode in ipairs({"world", "budget"}) do
+        local gui, _, _, event = runNetwork(4)
+        if mode == "world" then
+            local capacity = api.engine.util.town.getTownCapacityUsage
+            api.engine.util.town.getTownCapacityUsage = function(id) worldId = 100; return capacity(id) end
+        else clockStep = 0.1 end
+        local response = study(gui, event, "1:2")
+        equal(response.accepted, false); equal(heightReads, 0); equal(gui:get().request, nil)
+    end
+end)
+
+test("handoff: UI recommendation selection, duplicate names and one click reach subscribed plan handler", function()
+    local gui, _, untilState = runNetwork(4)
+    local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
+    local combos = find(tree, "ComboBox")
+    combos[1].params.onValueChange("3"); combos[2].params.onValueChange("2")
+    combos[3].params.onValueChange("1:4"); tree = render()
+    assert(panelText(tree):find("Twin [#1] -> Twin [#4]", 1, true))
+    assert(panelText(tree):find("Direct distance 2500", 1, true)); equal(heightReads, 0)
+    local button = find(tree, "Button", "Study Corridor")[1]
+    equal(button.params.meta.enabled, true); button.params.onClick(); button.params.onClick(); tree = render()
+    equal(gui:get().request.sourceId, 1); equal(gui:get().request.destinationId, 4)
+    equal(logCount("[RNA:HANDOFF:5B2] START"), 1)
+    equal(controls.events[#controls.events].name, "oz_railway_network_architect.plan.plan")
+    untilState(completed); poll(); tree = render()
+    equal(find(tree, "ComboBox")[1].params.value, "3"); equal(find(tree, "ComboBox")[2].params.value, "2")
+    assert(panelText(tree):find("branch #1 -> #4", 1, true)); assert(panelText(tree):find("economic feasibility unverified", 1, true))
+    local before = heightReads
+    find(tree, "ComboBox")[3].params.onValueChange(gui:get().request.preview.candidates[1].id)
+    render(); poll(); equal(heightReads, before)
+end)
+
+test("handoff: deferred selection, empty results and expired snapshots disable Study Corridor", function()
+    local gui, _, _, event = runNetwork(5)
+    local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
+    find(tree, "ComboBox")[3].params.onValueChange("1:5"); tree = render()
+    local button = find(tree, "Button", "Study Corridor")[1]
+    equal(button.params.meta.enabled, false); button.params.onClick(); render(); equal(gui:get().request, nil)
+    find(tree, "ComboBox")[3].params.onValueChange("1:2"); tree = render()
+    clock = clock + 61; poll(); tree = render()
+    equal(find(tree, "Button", "Study Corridor")[1].params.meta.enabled, false)
+    assert(panelText(tree):find("Analyze Network again", 1, true))
+    event("refresh"); poll(); tree = render()
+    equal(find(tree, "Button", "Study Corridor")[1].params.meta.enabled, false)
+end)
+
+test("handoff: expired window and replaced snapshot callbacks cannot launch obsolete studies", function()
+    local gui, _, untilState, event = runNetwork(4)
+    local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
+    local oldClick = find(tree, "Button", "Study Corridor")[1].params.onClick
+    analyze(gui, event); untilState(networkDone); poll(); render()
+    oldClick(); render(); equal(gui:get().request, nil)
+    tree = render(); local click = find(tree, "Button", "Study Corridor")[1].params.onClick
+    controls.autoJoin = false; click(); controls.panel.params.onClose(); controls.flush()
+    equal(gui:get().request, nil)
+    controls.autoJoin = true; tree = render(); controls.launcher.params.onClick(); tree = render()
+    equal(find(tree, "Button", "Study Corridor")[1].params.meta.enabled, true)
+    equal(heightReads, 0)
+end)
+
+test("handoff: independent origin survives network replacement and copied GUI state", function()
+    local gui, _, untilState, event = runNetwork(4)
+    local set = gui.set
+    local function copy(v)
+        if type(v) ~= "table" then assert(type(v) ~= "function"); return v end
+        local out = {}; for k, item in pairs(v) do out[k] = copy(item) end; return out
+    end
+    gui.set = function(self, value) set(self, copy(value)) end
+    assert(study(gui, event, "1:4").accepted); untilState(completed)
+    local original = serialize(gui:get().request.networkOrigin)
+    assert(analyze(gui, event).accepted); untilState(networkDone)
+    equal(gui:get().networkRequestId, 2)
+    equal(serialize(gui:get().request.networkOrigin), original)
+    equal(event("status").corridorOrigin.lines[1]:find("network #1", 1, true) ~= nil, true)
+    assert(event("status").preview)
+end)
+
 print("PASS " .. passed .. " live planning/UI tests (mocked engine and React, not TF3 runtime verification)")

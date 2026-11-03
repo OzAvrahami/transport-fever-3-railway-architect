@@ -2,12 +2,12 @@
 
 ## Current milestone
 
-Phase 5B.1 only: explicit, read-only live network topology analysis in the existing
-RNA panel. Preserve accepted local work, window styling, subscriptions, inventories
+Phase 5B.2 only: explicit handoff of a recommended network connection to the
+existing read-only corridor request pipeline. Preserve accepted local work, window styling, subscriptions, inventories
 and corridor algorithms. No automatic network analysis or all-pairs terrain A*.
 World-space rendering remains unresolved; the panel is NOT a map overlay.
 No staging deployment, construction, speculative APIs, commits, tags or pushes.
-Stop after Phase 5B.1 for code review and native verification.
+Stop after Phase 5B.2 for code review and native verification.
 The authoritative planner remains content/planning/ inside the mod.
 
 Topology studies consider supplied demand evidence, distance, geography and transport
@@ -16,6 +16,21 @@ and actual construction remain unverified; scores are explicit planning preferen
 
 ## Development conventions
 
+- Study Corridor uses the existing plan event with a network selector; do not add
+  a subscription or parallel transport. Resolve IDs through the owner's recommended
+  edges and canonical corridorRequest descriptor. Deferred/rejected edges are inert.
+- Preserve the shared corridor click token/busy guard. Never plan on network
+  completion, link selection, summary switching or load. Do not retry automatically.
+- Handoff validates world/epoch/network request/snapshot IDs, a 60-second age from
+  network collection start, bounded town index, map bounds, endpoint identity/XYZ
+  and current residential capacities. This is not atomic freshness; same-world
+  rail/industry and other-town metric changes remain unverified. Reanalyze explicitly.
+- Store an independent plain-data networkOrigin on the corridor request. Do not
+  rewrite topology classification or scores using corridor geometry. Retain provenance
+  even if a later network study replaces its source result; label it historical.
+- Suppress corridor previews in busy responses, including while network analysis is
+  active, to satisfy the existing preview validator. Keep status, origin and terrain
+  candidate validity distinct. Preserve manual source/destination selections.
 - Live network integration lives in network_live_api/data/request.lua. Reuse accepted
   read adapters and normalizers without sharing inventory script GUI states. The
   GUI request owner holds a separate network request ID, continuation and result.

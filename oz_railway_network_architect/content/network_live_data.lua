@@ -42,7 +42,7 @@ end
 local function codes(values) return table.concat(values or {}, ", "):gsub("_", " ") end
 function data.summary(r)
     local result = r.result
-    local s = {epoch = r.epoch, world = r.world, requestId = r.id, links = {}, lines = {}}
+    local s = {epoch = r.epoch, world = r.world, requestId = r.id, snapshotId = result.snapshotId, links = {}, lines = {}}
     local main, branch, omitted, deferred, hubs = 0, 0, {}, 0, {}
     local names = {}; for _, t in ipairs(result.towns) do
         names[t.id] = (t.name or "Town") .. " [#" .. t.id .. "]"
@@ -51,7 +51,7 @@ function data.summary(r)
     for _, h in ipairs(result.hubs) do hubs[#hubs + 1] = "#" .. h.townId end
     local function append(e)
         local evidence = e.evidence
-        s.links[#s.links + 1] = {id = e.id,
+        s.links[#s.links + 1] = {id = e.id, recommended = e.status == "recommended",
             label = (e.priority and ("Rank " .. e.priority .. " ") or "") .. (e.classification or e.status)
                 .. " | #" .. e.sourceId .. " - #" .. e.destinationId,
             lines = {names[e.sourceId] .. " -> " .. names[e.destinationId],
@@ -89,11 +89,12 @@ function data.summary(r)
 end
 function data.valid(s, owner)
     if type(s) ~= "table" or s.epoch ~= owner.epoch or s.world ~= owner.world
-        or s.requestId ~= owner.networkRequestId or type(s.lines) ~= "table" or #s.lines > 9
+        or s.requestId ~= owner.networkRequestId or type(s.snapshotId) ~= "string" or #s.snapshotId > 160
+        or type(s.lines) ~= "table" or #s.lines > 9
         or type(s.links) ~= "table" or #s.links > 55 then return false end
     for _, line in ipairs(s.lines) do if type(line) ~= "string" or #line > 1600 then return false end end
     for _, link in ipairs(s.links) do
-        if type(link) ~= "table" or type(link.id) ~= "string" or type(link.label) ~= "string"
+        if type(link) ~= "table" or type(link.id) ~= "string" or type(link.label) ~= "string" or type(link.recommended) ~= "boolean"
             or type(link.lines) ~= "table" or #link.lines ~= 6 then return false end
         for _, line in ipairs(link.lines) do if type(line) ~= "string" or #line > 1600 then return false end end
     end

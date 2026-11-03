@@ -64,5 +64,6 @@ planning_lua.execute((root / "tests" / "hierarchical_planner_test.lua").read_tex
 planning_lua.execute((root / "tests" / "preview_test.lua").read_text(encoding="utf-8"))
 planning_lua.execute((root / "tests" / "network_planner_test.lua").read_text(encoding="utf-8"))
 planning_lua.execute((root / "tests" / "network_worklist_test.lua").read_text(encoding="utf-8"))
+planning_lua.execute((root / "tests" / "rail_geometry_test.lua").read_text(encoding="utf-8"))
 planning_lua.globals().CONTENT = (package / "content").as_posix()
 planning_lua.execute((root / "tests" / "live_plan_test.lua").read_text(encoding="utf-8"))

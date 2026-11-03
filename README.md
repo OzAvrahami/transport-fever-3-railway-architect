@@ -1,6 +1,20 @@
 # Railway Network Architect
 
-**Phase 5C.2: explicit batch corridor studies (awaiting code review and native verification).**
+**Phase 6A: railway geometry foundation (offline only, awaiting review).**
+
+Audited official TF3 documentation, installed definitions and shipped track builders.
+The new pure-Lua `content/geometry/rail_curve.lua` produces bounded cubic Hermite
+endpoint/tangent candidates and sampled gradient/curvature diagnostics. It is not
+loaded by any live game script and creates no native proposals. Optional engineering
+thresholds are caller assumptions; candidate curves are not validated railway geometry.
+
+**267 automated tests pass**, including 20 independent geometry regressions; 49 Lua
+files pass syntax checks. Existing planners, inventories, events, UI and limits are
+unchanged. See the [Phase 6A source audit, mathematical contract, prototype, validation
+limitations and Phase 6B recommendation](docs/phase_6a_rail_geometry.md).
+No construction commands, proposal-validation calls, staging deployment, commits, tags or pushes.
+
+**Phase 5C.2 background: reviewed batch corridor studies; native verification pending.**
 
 After **Analyze Network**, mark included recommendations for further study, then click
 **Study Marked Corridors**. At most four links run sequentially, in original priority

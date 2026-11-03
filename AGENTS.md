@@ -2,13 +2,13 @@
 
 ## Current milestone
 
-Phase 5C.2 only: explicit sequential corridor studies for at most four included,
-marked recommendations in the session-owned Network Plan. Preserve the original
+Phase 6A only: source audit and isolated offline railway geometry candidates.
+No native proposal creation/evaluation or construction command execution. Preserve the original
 topology result and individual handoff, accepted local work, window styling, subscriptions, inventories
 and corridor algorithms. No automatic network analysis or all-pairs terrain A*.
 World-space rendering remains unresolved; the panel is NOT a map overlay.
 No staging deployment, construction, speculative APIs, commits, tags or pushes.
-Stop after Phase 5C.2 for code review and native verification.
+Stop after Phase 6A for code review. Newer live features still await native acceptance.
 The authoritative planner remains content/planning/ inside the mod.
 
 Topology studies consider supplied demand evidence, distance, geography and transport
@@ -17,6 +17,21 @@ and actual construction remain unverified; scores are explicit planning preferen
 
 ## Development conventions
 
+- Geometry prototype lives in content/geometry/rail_curve.lua, with no live imports
+  or TF3 dependencies. Input is an explicit metre-unit XYZ projection; preserve the
+  original corridor, water/obstacle provenance and endpoint approximations outside it.
+- Candidate geometry uses cubic Hermite u in [0,1], both tangents dP/du, not unit
+  directions or reversed end tangents. The fitting heuristic is an assumption, not
+  TF3's native builder algorithm. C1 in unit intervals does not imply C2 or buildability.
+- Bound offline geometry to 256 input points and 8-64 diagnostic intervals/segment.
+  Gradient/radius limits are optional caller assumptions, never silently copied from
+  resource examples. Numerical minimum chord is not a game minimum segment length.
+- Keep sampled curvature/gradient diagnostics distinct from certified extrema and
+  engine validation. Fitted curves leave terrain samples; clearance, earthworks,
+  bridges/tunnels, stations and connections require future independent assessment.
+- Do not equate construction edgeLists, SimpleProposal and processed Proposal.
+  makeProposalData accepts Proposal, not a documented SimpleProposal overload.
+  Phase 6A must not execute it, create WorldBuildProposal commands or send commands.
 - Batch coordination lives in network_batch.lua, in the existing GUI owner only.
   Reuse the plan event with a separate batch envelope/token; no extra subscription.
   Start only on Study Marked Corridors. Marking/editing never triggers a search.

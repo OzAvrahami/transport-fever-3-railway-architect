@@ -2,15 +2,16 @@
 
 ## Current milestone
 
-Phase 3C only: add a read-only railway topology inventory. City, industry and
-terrain inventories are accepted in-game; the baseline is b262240 on main.
-Preserve all accepted scanners, mod identity, revision, metadata and bootstrap.
-Do not commit, tag, push or publish. Results stay in GUI-session memory, never
-saves or exports. Stop for review before network planning, UI or construction.
+Phase 4A only: a deterministic, pure-Lua corridor planning core using synthetic
+fixtures. Baseline 988b756 on main; all four inventories are accepted in-game
+(Phase 3C: 2,021 segments and 2,014 nodes). Preserve the entire deployable package.
+Planning modules stay in planning/, outside game resources. No live integration,
+staging updates, construction, UI, commits, tags, pushes or publication.
+Stop for code review before Phase 4B.
 
 Future planning must consider road alternatives, demand, distance, existing
 infrastructure and cost. A city or industry does not automatically need rail.
-Those decisions and economic calculations are outside Phase 3C.
+Those connection decisions and economic calculations are outside Phase 4A.
 
 ## Development conventions
 
@@ -28,6 +29,17 @@ Those decisions and economic calculations are outside Phase 3C.
   city queries into the bootstrap hook. Use the verified Game Script callback.
 - Keep engine API integration separate from pure data normalization. Sort records
   by entity ID. Distinguish missing data from zero and avoid repeated scans/logs.
+- Planning takes explicit plain data; inventory Game Script GUI states are separate.
+  Do not infer shared snapshots, station locations from town centers, operational
+  routing from physical adjacency, or construction geometry from a 24x24 terrain grid.
+- A corridor is a sampled-grid path, never a buildable railway. Scores are planning
+  preferences, not game construction costs. Gradient assumptions and weights must
+  be explicit/configurable. No invented TF3 gradient or curvature standards.
+- Keep planner inputs immutable, tie-breaking deterministic, and CPU/memory bounded.
+  Exclude unknown samples, prevent diagonal corner cutting, distinguish search
+  limits from unreachable destinations, and deduplicate similar alternatives.
+- Use the existing isolated Lua test harness; include synthetic route scenarios,
+  independent shortest-path comparisons and tests at computational limits.
 - Railway adjacency describes shared BASE_NODE endpoints only. Degree >= 3 is a
   junction candidate, not operational switch connectivity or route availability.
   Empty railway networks must succeed. Never classify all STATION entities as rail.

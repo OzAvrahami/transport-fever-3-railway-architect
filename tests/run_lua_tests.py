@@ -1,4 +1,4 @@
-"""Development-only Lua 5.4 syntax and railway tests; never loads TF3 or saves."""
+"""Development-only Lua 5.4 syntax, railway and planning tests; no TF3 or saves."""
 from pathlib import Path
 import json
 import re
@@ -9,7 +9,7 @@ root = Path(__file__).resolve().parents[1]
 package = root / "oz_railway_network_architect"
 lua = LuaRuntime(unpack_returned_tuples=True)
 compile_lua = lua.eval("function(source, name) local f, err = load(source, name); assert(f, err) end")
-files = list(package.rglob("*.lua")) + list((root / "tests").glob("*.lua"))
+files = sorted(package.rglob("*.lua")) + sorted((root / "tests").glob("*.lua")) + sorted((root / "planning").glob("*.lua"))
 for path in files:
     source = path.read_text(encoding="utf-8")
     assert not source.startswith("\ufeff"), f"BOM: {path}"
@@ -47,3 +47,8 @@ for reference in references:
 print("PASS mod identity/revision and all descriptor/manifest callback exports")
 lua.globals().ROOT = root.as_posix()
 lua.execute((root / "tests" / "rail_inventory_test.lua").read_text(encoding="utf-8"))
+# Separate runtime: the planner cannot accidentally depend on the rail tests' API mocks.
+planning_lua = LuaRuntime(unpack_returned_tuples=True)
+planning_lua.globals().MODULE_PATH = root.as_posix() + "/?.lua"
+planning_lua.execute("package.path = MODULE_PATH")
+planning_lua.execute((root / "tests" / "corridor_planner_test.lua").read_text(encoding="utf-8"))

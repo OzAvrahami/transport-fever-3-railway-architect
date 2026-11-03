@@ -1,19 +1,49 @@
 # Railway Network Architect
 
-**Phase 3C: read-only railway topology inventory**, alongside the accepted city,
-industry and coarse terrain inventories. Plain Lua; no UI, construction, terrain
-or economy changes, runtime dependencies, or export files.
+**Phase 4A: terrain-aware corridor planning core using synthetic data only.**
+The accepted city, industry, terrain and railway inventories remain unchanged.
+The new pure-Lua code lives outside the deployable mod; there is no live-game
+integration, UI, construction, simulation change or staging update.
 Identity and revision remain
 `oz_railway_network_architect`, `Railway Network Architect`, **1**.
 
-Phases 2A through 3B are accepted and runtime verified by the user.
-The baseline for this work is **b262240** on `main`.
-Phase 3C changes no version, tags, manifest or metadata. Railway scanning still
-requires real-game verification. No commit, tag, push or staging update is performed.
+Phases 2A through 3C are accepted and runtime verified by the user. The railway
+inventory reported **2,021 segments and 2,014 nodes**. The baseline for this work
+is **988b756** on `main`. No version, tags, manifest or metadata changes; no commit,
+tag, push, publication or staging update is performed.
 
 Future recommendations must consider geography, demand, road alternatives,
 distance, existing infrastructure and costs. Not every city or industry needs
-rail access. Those decisions are outside this inventory phase.
+rail access. Those connection decisions are outside Phase 4A.
+
+## Phase 4A planning core
+
+The [planning contract, algorithm, example and Phase 4B proposal](docs/phase_4a_planning.md)
+describe the implementation in detail. Entry point:
+`require("planning.corridor_planner").plan(input)`, with the repository root on
+Lua's module path. No mod descriptor imports this code.
+
+- Explicit world-coordinate endpoints on a rectangular sample grid; finite height,
+  water, blocked cells, soft obstacles, constraints and configurable weights.
+- Three deterministic A* profiles: distance, terrain and balanced. Shared scoring
+  ranks complete paths, then merges duplicates and suppresses similar alternatives.
+- Ordered world-coordinate waypoints, approximate length, elevation gain/loss,
+  maximum sampled grade, water indicators and transparent score components.
+- At most 16,384 cells and 49,152 expansions across the three searches. Unknown
+  samples are excluded, diagonal corner cutting is prevented, and search exhaustion
+  is distinguished from computational limits. No buildability or game-cost claims.
+
+All inventory GUI callback states are separate. The 24x24 terrain snapshot is too
+coarse for construction-ready alignment. Town centers are not verified station
+sites, and railway adjacency does not establish operational routing. Phase 4B
+must establish explicit snapshot ownership, endpoint provenance, finer bounded
+sampling and safe GUI scheduling before live integration.
+
+Run `uv run --no-project --offline --with lupa==2.8 python tests/run_lua_tests.py`.
+This reuses the existing cached development runtime. The suite covers 22 planning
+tests plus the 20 accepted railway tests and prints a three-corridor synthetic
+comparison. **Do not copy planning code or fixtures into staging. Stop for code
+review before Phase 4B.**
 
 ## Documented API invocation correction
 
@@ -44,8 +74,8 @@ The optional timer uses the same protected direct-call pattern; a timer exceptio
 leaves duration unavailable and adds an `error` field to the existing `DURATION`
 line. Returned data validation, lifecycle and the terminal guard are unchanged.
 
-The Phase 3C update below adds only the four railway files to the accepted
-development copy. All existing scanners remain unchanged; README is not deployed.
+The historical Phase 3C staging instructions below are retained for reference.
+Phase 4A has no deployment step; all existing package files remain unchanged.
 
 If a readiness read throws, expect `WAIT_WORLD` followed by a diagnostic such as:
 
@@ -64,9 +94,17 @@ railway-architect/
   .gitignore
   AGENTS.md
   README.md
+  docs/
+    phase_4a_planning.md
+  planning/
+    corridor_grid.lua
+    corridor_search.lua
+    corridor_planner.lua
   tests/
     run_lua_tests.py
     rail_inventory_test.lua
+    corridor_fixtures.lua
+    corridor_planner_test.lua
   oz_railway_network_architect/
     mod.json
     _metadata/modinfo.json
@@ -90,13 +128,14 @@ railway-architect/
       rail_inventory_data.lua
 ```
 
-The manifest and bootstrap are unchanged. The new descriptor registers the live
-callback; `city_inventory.script.lua` handles readiness, deduplication and logging;
+The manifest and bootstrap are unchanged. The accepted descriptors register live
+callbacks; `city_inventory.script.lua` handles readiness, deduplication and logging;
 `city_inventory_api.lua` contains game integration; `city_inventory_data.lua`
 contains pure normalization and formatting. The industry files follow the same
 separation. Metadata still describes the accepted Phase 2B baseline and is
 deliberately unchanged. `cosmetic=true` and add/remove severity `None` remain
-consistent with read-only diagnostics; Phase 3C runtime/removal is not yet tested.
+consistent with read-only diagnostics. Phase 3C enumeration is now runtime verified;
+Phase 4A does not change the package or its behavior.
 
 ## Railway contracts and source evidence
 
@@ -425,6 +464,8 @@ removed before logging. No population or ongoing monitoring is implemented.
 
 ## Safe update of the installed development copy
 
+**Historical Phase 3C instructions only. Phase 4A has no staging update.**
+
 Close TF3. Only copy package files from:
 
 ```text
@@ -670,20 +711,23 @@ or Python/Lupa into staging. The Lua version is a development check, not a claim
 about TF3's embedded Lua version.
 
 Validation covers Lua syntax, local references/import targets, strict JSON and
-UTF-8 without BOM. Twenty executable synthetic tests cover all seven requested
+UTF-8 without BOM. Twenty accepted railway tests cover all seven requested
 graph cases, negative/zero/nonfinite coordinates, missing data, limits, bounded
 diagnostics, API errors, symbolic track filtering, readiness, batching, once-only
 behavior and explicit aborts. Mocks exercise our logic; they do not verify native
 bindings or the engine's GUI-state lifetime. Final review also checks descriptor
-callback exports, unchanged accepted package files versus b262240, PowerShell
+callback exports, unchanged accepted package files versus 988b756, PowerShell
 example syntax and the absence of world-changing calls. No staging commands are
 executed during validation.
 
-The user verified the accepted city, industry and terrain inventories. Railway
-resource registration, actual native return values, coverage of special track
-layouts, latency and same-process reload behavior remain unverified until the
-manual tests above run. There is no proven atomic snapshot across GUI batches or
-station-terminal-to-base-edge mapping. The public definitions do not guarantee
-GUI-state reset on every load path. Nothing was changed in the original game,
-staging or saves; no commit, tag, push or publication was made. Stop after Phase
-3C implementation for review and real-game verification.
+The additional 22 planning tests run in a separate Lua VM without TF3 mocks and
+include all required scenarios, analytic geometry checks, 48 reference shortest-path
+comparisons and a maximum-size stress fixture. See the Phase 4A document for the
+contract, actual synthetic outputs and limits. Syntax checks cover 23 Lua files.
+
+The user verified all four inventories; railway enumeration reported 2,021 segments
+and 2,014 nodes. Special layout coverage and lifecycle edge cases remain subjects
+for the retained manual scenarios. There is no proven atomic snapshot across GUI
+batches or station-terminal-to-base-edge mapping. Phase 4A supplies no new game
+integration. Nothing was changed in the original game, staging or saves; no commit,
+tag, push or publication was made. Stop after Phase 4A implementation for code review.

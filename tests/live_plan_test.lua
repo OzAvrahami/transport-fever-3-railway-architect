@@ -1078,13 +1078,14 @@ test("missing engine subscriptions reproduces idle ten-town owner with nil UI re
     equal(logCount("REQUEST_START"), 0); equal(heightReads, 0)
 end)
 
-test("registration subscribes exactly four names once even for zero dt; no engine data access", function()
+test("registration subscribes exactly five names once even for zero dt; no engine data access", function()
     local _, _, _, _, callbacks = newSession()
     local beforeReads = reads
     for _ = 1, 30 do callbacks.update(nil, callbacks.engineState, 0) end
     local expected = {['oz_railway_network_architect.plan.status'] = 1,
         ['oz_railway_network_architect.plan.refresh'] = 1,
-        ['oz_railway_network_architect.plan.plan'] = 1, reactPostInit = 1}
+        ['oz_railway_network_architect.plan.plan'] = 1,
+        ['oz_railway_network_architect.plan.analyzeNetwork'] = 1, reactPostInit = 1}
     equal(serialize(callbacks.subscriptions), serialize(expected))
     equal(reads, beforeReads); equal(heightReads, 0); equal(logCount("EVENT_SUBSCRIPTIONS_READY"), 1)
     -- engineState intentionally has no get/set or command API: registration cannot persist planner state.
@@ -1392,6 +1393,330 @@ test("consumed rejected click token cannot expose summary under a different requ
     equal(gui:get().request.preview.requestId, 1); equal(rejected.requestId, 2)
     local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
     equal(#find(tree, "ComboBox"), 2); equal(logCount("UI_ERROR"), 0)
+end)
+
+-- Phase 5B.1: reuse the real owner, registration, read adapters and restricted React harness.
+local function networkFixture(count)
+    entities, ids = {}, {}
+    mapBounds = {minX = -50000, minY = -50000, maxX = 50000, maxY = 50000}
+    for i = 1, count or 4 do
+        local points = {{0, 0}, {-4000, 0}, {4000, 0}, {0, 2500}, {200, 0}}
+        local xy = points[i] or {i * 1100, 10000}
+        entities[i] = {id = i, name = "Twin", x = xy[1], y = xy[2], z = -2, capacity = i == 4 and 400 or (i == 5 and 50 or 2000)}
+        ids[#ids + 1] = i
+    end
+    local native = {industryIds = {}, components = {}, trackMap = {}, capacityReads = 0}
+    local oldExists, oldComponent, oldIds = api.engine.entityExists, api.engine.getComponent, api.engine.getEntitiesWithComponent
+    api.type.ComponentType.INDUSTRY, api.type.ComponentType.CONSTRUCTION = "industry", "construction"
+    api.type.ComponentType.BASE_EDGE, api.type.ComponentType.BASE_NODE = "edge", "node"
+    api.type["enum"] = {LandUseType = {RESIDENTIAL = 2}, RoadType = {TRACK = "track"}}
+    api.engine.entityExists = function(id) return native.components[id] ~= nil or oldExists(id) end
+    api.engine.getComponent = function(id, kind)
+        return native.components[id] and native.components[id][kind] or oldComponent(id, kind)
+    end
+    api.engine.getEntitiesWithComponent = function(kind)
+        if kind == "industry" then return native.industryIds end
+        return oldIds(kind)
+    end
+    -- Deliberately callable table: production must never demand type == function.
+    api.engine.util.town = {getTownCapacityUsage = setmetatable({}, {__call = function(_, id)
+        native.capacityReads = native.capacityReads + 1
+        return {[1] = {capacity = 999999}, [3] = {capacity = entities[id] and entities[id].capacity}}
+    end})}
+    api.engine.system.streetSystem = {getNode2TrackEdgeMap = function() return native.trackMap end}
+    return native
+end
+local function analyze(gui, event)
+    local s = gui:get()
+    return event("analyzeNetwork", {world = s.world, epoch = s.epoch, requestId = s.networkRequestId + 1})
+end
+local function networkDone(s) return s and s.network and s.network.finished end
+local function runNetwork(count, setup)
+    local gui, step, untilState, event, callbacks = newSession()
+    local native = networkFixture(count)
+    if setup then setup(native) end
+    ready(step, untilState); assert(analyze(gui, event).accepted); untilState(networkDone)
+    return gui, step, untilState, event, native, callbacks
+end
+
+test("network: native snapshot uses symbolic capacity index, plain provenance and no terrain reads", function()
+    local gui = runNetwork(4)
+    local r = gui:get().network
+    equal(r.status, "ok"); equal(r.result.stats.pairs, 6); equal(r.result.stats.astarSearches, 0)
+    equal(heightReads, 0); equal(r.missingCapacity, 0)
+    equal(#r.result.recommendations, 3); equal(#r.result.hubs, 1)
+    local main, branch = 0, 0
+    for _, e in ipairs(r.result.recommendations) do
+        if e.classification == "mainline" then main = main + 1 else branch = branch + 1 end
+        equal(e.evidence.residentialCapacitySource.basis, "observed")
+        equal(e.evidence.demandSupport, nil); equal(e.evidence.geography, nil)
+        equal(e.constructionStatus, "unverified")
+    end
+    equal(main, 2); equal(branch, 1); equal(r.result.towns[1].name, r.result.towns[2].name)
+    equal(r.result.recommendations[1].evidence.residentialCapacitySource.value, 2000)
+    assert(r.summary.lines[1]:find("Mainlines: 2 | Branches: 1", 1, true))
+    equal(r.input, nil); equal(r.edges, nil)
+end)
+
+test("network: missing capacity is unknown and explicit zero stays zero", function()
+    local gui = runNetwork(3, function() entities[1].capacity = nil; entities[2].capacity = 0 end)
+    local r = gui:get().network
+    equal(r.status, "ok"); equal(r.missingCapacity, 1); equal(#r.result.recommendations, 0)
+    equal(r.result.decisions[1].evidence.residentialCapacitySource, nil)
+    equal(r.result.decisions[1].evidence.residentialCapacityDestination.value, 0)
+    assert(r.summary.lines[5]:find("not demand", 1, true))
+end)
+
+test("network: empty and single-town maps complete without invented connections", function()
+    for _, count in ipairs({0, 1}) do
+        local gui = runNetwork(count)
+        equal(gui:get().network.status, "ok"); equal(#gui:get().network.result.towns, count)
+        equal(#gui:get().network.result.recommendations, 0)
+    end
+end)
+
+test("network: near small towns deliberately stay unconnected", function()
+    local gui = runNetwork(5)
+    local r = gui:get().network.result
+    equal(r.towns[5].degree, 0); equal(r.towns[5].status, "no_new_rail_recommended_now")
+    local found = false
+    for _, d in ipairs(r.decisions) do if d.id == "1:5" then
+        equal(d.reasons[1], "short_distance_compare_road_first"); found = true
+    end end
+    assert(found)
+end)
+
+local function railFixture(n)
+    n.trackMap = {[100] = {900}, [101] = {900}}
+    n.components[100] = {node = {position = {x = 0, y = 0, z = 0}}}
+    n.components[101] = {node = {position = {x = -4000, y = 0, z = 0}}}
+    n.components[900] = {edge = {node0 = 100, node1 = 101, roadType = "track", roadTemplate = "verified-fixture-track",
+        position0 = {x = 0, y = 0, z = 0}, position1 = {x = -4000, y = 0, z = 0}}}
+end
+test("network: physical rail proximity defers reuse inspection without service claims", function()
+    local gui = runNetwork(2, railFixture)
+    local r = gui:get().network.result
+    equal(#r.recommendations, 0)
+    equal(r.decisions[1].reasons[1], "inspect_existing_physical_rail_before_new_corridor")
+    equal(r.decisions[1].infrastructure.source.nodeId, 100)
+    equal(r.decisions[1].infrastructure.destination.nodeId, 101)
+end)
+
+test("network: broken rail graph is omitted with precise diagnostics, never silently complete", function()
+    local gui = runNetwork(2, function(n) railFixture(n); n.components[101] = nil end)
+    local r = gui:get().network
+    equal(r.status, "ok"); assert(r.warningCount > 0)
+    equal(r.result.decisions[1].infrastructure.provenance, nil)
+    assert(hasLog("partial_rail_inventory_omitted")); assert(hasLog("api.engine.entityExists(101)"))
+end)
+
+test("network: industry construction origin/resource collected but never creates freight edges", function()
+    local gui = runNetwork(2, function(n)
+        n.industryIds = {700, 701}
+        n.components[700] = {industry = {construction = 800, level = 0}}
+        n.components[701] = {industry = {construction = 801, level = 0}}
+        n.components[800] = {construction = {fileName = "synthetic_logging", transf = {getTransl = function() return {x = 0, y = 10, z = -3} end}}}
+    end)
+    local r = gui:get().network
+    equal(r.status, "ok"); equal(#r.result.industries, 1)
+    equal(r.result.industries[1].resource, "synthetic_logging"); equal(r.result.industries[1].status, "deferred")
+    assert(r.warningCount > 0); equal(#r.result.recommendations, 1)
+end)
+
+test("network: separated distant groups do not force national connectivity", function()
+    local gui = runNetwork(4, function()
+        entities[3].x, entities[3].y = 30000, 20000
+        entities[4].x, entities[4].y = 34000, 20000
+    end)
+    equal(#gui:get().network.result.components, 2)
+end)
+
+test("network: deterministic repeated snapshots preserve policy and bounded UI data", function()
+    local gui, _, untilState, event = runNetwork(5)
+    local first = serialize(gui:get().network.result.decisions)
+    assert(analyze(gui, event).accepted); untilState(networkDone)
+    equal(serialize(gui:get().network.result.decisions), first)
+    local response = event("status")
+    assert(response.networkSummary); equal(response.networkSummary.result, nil)
+    equal(response.networkSummary.rail, nil); equal(response.networkRequestId, 2)
+end)
+
+test("network: explicit click only; request replay and corridor concurrency rejected", function()
+    local gui, step, untilState, event = newSession(); local n = networkFixture(4)
+    ready(step, untilState); step(100); event("status")
+    equal(gui:get().network, nil); equal(n.capacityReads, 0)
+    local s = gui:get(); local token = {world = s.world, epoch = s.epoch, requestId = 1}
+    assert(event("analyzeNetwork", token).accepted)
+    equal(event("analyzeNetwork", token).reason, "busy")
+    equal(submit(gui, event, 1, 2).reason, "busy")
+    equal(event("refresh").reason, "busy")
+    untilState(networkDone)
+    equal(event("analyzeNetwork", token).reason, "duplicate_or_stale_network_request")
+    equal(logCount("START world="), 1)
+    assert(submit(gui, event, 1, 2).accepted)
+    equal(analyze(gui, event).reason, "busy")
+end)
+
+test("network: stale request, world change and reactPostInit invalidate independent state", function()
+    local gui, step, untilState, event, cb = newSession(); networkFixture(3); ready(step, untilState)
+    equal(event("analyzeNetwork", {world = -1, epoch = gui:get().epoch, requestId = 1}).reason, "stale_session")
+    assert(analyze(gui, event).accepted); step(3); local old = gui:get().network
+    worldId = 100; step(); equal(old.status, "invalidated"); equal(old.result, nil); equal(gui:get().network, nil)
+    ready(step, untilState); assert(analyze(gui, event).accepted); step(3); old = gui:get().network
+    cb.guiHandleEvent(nil, nil, gui, "native", "gameUI", "reactPostInit", {})
+    equal(old.status, "invalidated"); equal(gui:get().networkRequestId, 0)
+end)
+
+test("network: changed anchors, index and bounds stop stale snapshot publication", function()
+    for _, change in ipairs({function() entities[1].x = 1 end,
+        function() ids[#ids + 1] = 123 end,
+        function() mapBounds.maxX = 49000 end}) do
+        local gui, step, untilState, event = newSession(); networkFixture(2); ready(step, untilState)
+        analyze(gui, event)
+        untilState(function(s) return s.network.phase == "verify_towns" end)
+        change(); untilState(networkDone)
+        equal(gui:get().network.status, "error"); equal(gui:get().network.summary, nil)
+    end
+end)
+
+test("network: town and pair caps abort oversized analysis rather than truncate", function()
+    local gui = runNetwork(33)
+    equal(gui:get().network.status, "unsupported"); equal(gui:get().network.summary, nil)
+    assert(gui:get().network.message:find("limit", 1, true))
+    gui = runNetwork(32)
+    equal(gui:get().network.status, "ok"); equal(gui:get().network.result.stats.pairs, 496)
+    assert(#gui:get().network.summary.links <= 55)
+end)
+
+test("network: read batches, age and observed work limits stay bounded", function()
+    local gui, step, untilState, event = newSession(); local n = networkFixture(12); ready(step, untilState)
+    analyze(gui, event); step(); equal(n.capacityReads, 0)
+    step(); equal(n.capacityReads, 4); step(); equal(n.capacityReads, 8)
+    clock = clock + 61; step(); equal(gui:get().network.status, "invalidated")
+    clockStep = 0; analyze(gui, event); clockStep = 0.1; step()
+    equal(gui:get().network.status, "performance_limit"); equal(gui:get().network.summary, nil)
+    equal(logCount("COMPLETE status=ok"), 0)
+end)
+
+test("network: optional native reads fail visibly without inventing size or industries", function()
+    local gui = runNetwork(2, function()
+        api.engine.util.town.getTownCapacityUsage = nil
+        api.engine.system.streetSystem.getNode2TrackEdgeMap = function() error("native track read failed") end
+    end)
+    local r = gui:get().network
+    equal(r.status, "ok"); equal(#r.result.recommendations, 0); equal(r.missingCapacity, 2)
+    assert(hasLog("getTownCapacityUsage")); assert(hasLog("native track read failed"))
+end)
+
+test("network: UI click uses subscribed join dispatch, real result and inspectable ID links", function()
+    local gui, step, untilState = newSession(); networkFixture(5); ready(step, untilState)
+    local render, poll, tree, controls = mountUI()
+    find(tree, "Button", "Railway Network Architect")[1].params.onClick(); tree = render()
+    equal(gui:get().network, nil)
+    local combos = find(tree, "ComboBox")
+    combos[1].params.onValueChange("1"); combos[2].params.onValueChange("2"); tree = render()
+    local button = find(tree, "Button", "Analyze Network")[1]
+    assert(button.params.meta.enabled); button.params.onClick(); button.params.onClick(); tree = render()
+    equal(gui:get().networkRequestId, 1); equal(find(tree, "Button", "Plan")[1].params.meta.enabled, false)
+    untilState(networkDone); poll(); tree = render()
+    combos = find(tree, "ComboBox"); equal(#combos, 3)
+    equal(combos[1].params.value, "1"); equal(combos[2].params.value, "2")
+    equal(combos[3].params.value, gui:get().network.summary.links[1].id)
+    local last = gui:get().network.summary.links[#gui:get().network.summary.links]
+    combos[3].params.onValueChange(last.id); tree = render()
+    equal(find(tree, "ComboBox")[3].params.value, last.id)
+    equal(heightReads, 0); equal(logCount("START world="), 1)
+    assert(controls.events[#controls.events].name:find("status", 1, true))
+end)
+
+test("network: refresh, transport failure and close/reopen do not restore stale summaries", function()
+    local gui, _, _, event = runNetwork(3)
+    local render, poll, tree, controls = mountUI()
+    find(tree, "Button", "Railway Network Architect")[1].params.onClick(); tree = render()
+    equal(#find(tree, "ComboBox"), 3)
+    controls.resultFilter = function() return nil end; poll(); tree = render()
+    equal(#find(tree, "ComboBox"), 2)
+    controls.resultFilter = nil
+    find(tree, "Button", "Refresh towns")[1].params.onClick(); tree = render()
+    equal(gui:get().network, nil); equal(#find(tree, "ComboBox"), 2)
+    controls.panel.params.onClose(); tree = render()
+    find(tree, "Button", "Railway Network Architect")[1].params.onClick(); tree = render()
+    equal(#find(tree, "ComboBox"), 2); equal(event("status").networkSummary, nil)
+end)
+
+test("network: malformed response stops polling and stale link callbacks are ignored", function()
+    local gui, _, _, event = runNetwork(3)
+    local render, poll, tree, controls = mountUI()
+    find(tree, "Button", "Railway Network Architect")[1].params.onClick(); tree = render()
+    local oldChoice = find(tree, "ComboBox")[3].params.onValueChange
+    controls.resultFilter = function(value) value.networkSummary = {epoch = -1}; return value end
+    poll(); tree = render(); local count = #controls.events; poll(); poll()
+    equal(#controls.events, count); equal(#find(tree, "ComboBox"), 2)
+    oldChoice("1:2"); tree = render(); equal(#find(tree, "ComboBox"), 2)
+    controls.resultFilter = nil; event("refresh")
+    find(tree, "Button", "Refresh towns")[1].params.onClick(); render()
+    equal(gui:get().network, nil)
+end)
+
+test("network: GUI state copying preserves the continuation without table identity assumptions", function()
+    local gui, step, untilState, event = newSession(); networkFixture(5)
+    local set = gui.set
+    local function copy(v)
+        if type(v) ~= "table" then assert(type(v) ~= "function"); return v end
+        local out = {}; for k, item in pairs(v) do out[k] = copy(item) end; return out
+    end
+    gui.set = function(self, value) set(self, copy(value)) end
+    ready(step, untilState); analyze(gui, event); untilState(networkDone)
+    equal(gui:get().network.status, "ok"); equal(#gui:get().network.result.recommendations, 3)
+end)
+
+test("network: optional input size limits omit whole context with visible warnings", function()
+    local gui = runNetwork(2, function(n)
+        for i = 1, 129 do n.industryIds[i] = 1000 + i end
+        for i = 1, 4097 do n.trackMap[10000 + i] = {20000 + i} end
+    end)
+    local r = gui:get().network
+    equal(r.status, "ok"); equal(#r.result.industries, 0)
+    equal(r.snapshot.railNodes, nil); assert(r.warningCount >= 2)
+    assert(hasLog("industries omitted")); assert(hasLog("rail omitted"))
+end)
+
+test("network: final work-limit failure cannot publish a successful summary", function()
+    local gui, step, untilState, event = newSession(); networkFixture(4); ready(step, untilState)
+    analyze(gui, event); untilState(function(s) return s.network.phase == "summary" end)
+    clockStep = 0.1; step()
+    equal(gui:get().network.status, "performance_limit"); equal(gui:get().network.summary, nil)
+    equal(gui:get().network.snapshot, nil); equal(logCount("COMPLETE status=ok"), 0)
+end)
+
+test("network: rail reads are sliced, maximum supported graph remains bounded", function()
+    local gui, step, untilState, event = newSession(); local n = networkFixture(32)
+    for i = 1, 4096 do
+        n.components[10000 + i] = {node = {position = {x = i * 10, y = 15000, z = 0}}}
+        n.trackMap[10000 + i] = {}
+    end
+    for i = 1, 8192 do
+        local a, b = 10001 + ((i - 1) % 4096), 10001 + (i % 4096)
+        n.components[20000 + i] = {edge = {node0 = a, node1 = b, roadType = "track", roadTemplate = "synthetic",
+            position0 = n.components[a].node.position, position1 = n.components[b].node.position}}
+        table.insert(n.trackMap[a], 20000 + i); table.insert(n.trackMap[b], 20000 + i)
+    end
+    local oldComponent = api.engine.getComponent
+    local edgeReads, nodeReads = 0, 0
+    api.engine.getComponent = function(id, kind)
+        if kind == "edge" then edgeReads = edgeReads + 1 elseif kind == "node" then nodeReads = nodeReads + 1 end
+        return oldComponent(id, kind)
+    end
+    ready(step, untilState); analyze(gui, event)
+    local started, steps = os.clock(), 0
+    while not networkDone(gui:get()) do
+        edgeReads, nodeReads = 0, 0; step(); steps = steps + 1
+        assert(edgeReads <= 16 and nodeReads <= 16); assert(steps < 900)
+    end
+    local r = gui:get().network
+    equal(r.status, "ok"); equal(r.snapshot.railNodes, 4096); equal(r.snapshot.railSegments, 8192)
+    equal(r.result.stats.railNodeComparisons, 131072); equal(r.result.stats.pairs, 496)
+    print(string.format("NETWORK MOCK STRESS callbacks=%d cpu_seconds=%.6f nodes=4096 segments=8192 pairs=496 (not native timing)", steps, os.clock() - started))
 end)
 
 print("PASS " .. passed .. " live planning/UI tests (mocked engine and React, not TF3 runtime verification)")

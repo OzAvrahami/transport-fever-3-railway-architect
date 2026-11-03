@@ -8,8 +8,9 @@ function data()
             state:subscribeToEvent("oz_railway_network_architect.plan.status")
             state:subscribeToEvent("oz_railway_network_architect.plan.refresh")
             state:subscribeToEvent("oz_railway_network_architect.plan.plan")
+            state:subscribeToEvent("oz_railway_network_architect.plan.analyzeNetwork")
             state:subscribeToEvent("reactPostInit")
-            debugPrint("[RNA:PLAN:4B2] EVENT_SUBSCRIPTIONS_READY count=4")
+            debugPrint("[RNA:PLAN:4B2] EVENT_SUBSCRIPTIONS_READY count=5")
         end,
     }
 end

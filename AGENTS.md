@@ -2,12 +2,12 @@
 
 ## Current milestone
 
-Phase 5A only: deterministic pure-Lua network topology studies, with synthetic tests.
-No live network execution, UI changes or new native APIs. Preserve all uncommitted
-Phase 4B.2/4B.3/4B.4 work, layout, subscriptions, inventories and corridor algorithms.
-World-space rendering remains unresolved; the existing panel is NOT a map overlay.
-No automatic staging update, construction, speculative overlays, commits, tags,
-pushes or publication. Stop after Phase 5A for code review.
+Phase 5B.1 only: explicit, read-only live network topology analysis in the existing
+RNA panel. Preserve accepted local work, window styling, subscriptions, inventories
+and corridor algorithms. No automatic network analysis or all-pairs terrain A*.
+World-space rendering remains unresolved; the panel is NOT a map overlay.
+No staging deployment, construction, speculative APIs, commits, tags or pushes.
+Stop after Phase 5B.1 for code review and native verification.
 The authoritative planner remains content/planning/ inside the mod.
 
 Topology studies consider supplied demand evidence, distance, geography and transport
@@ -16,6 +16,25 @@ and actual construction remain unverified; scores are explicit planning preferen
 
 ## Development conventions
 
+- Live network integration lives in network_live_api/data/request.lua. Reuse accepted
+  read adapters and normalizers without sharing inventory script GUI states. The
+  GUI request owner holds a separate network request ID, continuation and result.
+  Analyze Network is explicit and mutually exclusive with active corridor work.
+- Live limits: 32 towns/496 pairs, 128 industries, 4096 rail nodes/8192 segments;
+  four town/industry reads or sixteen rail reads per callback. Oversized town input
+  fails; oversized/unavailable optional inventories are omitted with warnings.
+  Keep the unchanged core synchronous under the smaller cap, the 50 ms observed
+  work guard and 60-second snapshot limit. No native latency guarantee follows.
+- Native capacity uses getTownCapacityUsage and symbolic LandUseType.RESIDENTIAL + 1.
+  Preserve provenance; capacity is not demand. Omit unknown demand, geography,
+  regional barriers and transport adequacy. Never supply synthetic live assessments.
+- Revalidate world/ticks per callback and town anchors/index/bounds before topology.
+  This is an interval snapshot, not atomic; report missing data and same-world edits
+  that cannot be detected. Reload invalidates results; no save persistence.
+- Network UI transfers only nine summary lines and up to 55 compact connection
+  entries: all proposed links, then at most 24 deferred/rejected links in ID order.
+  Keep epoch/world/network-request matching, transport failure hiding and fresh
+  reopen response. Preserve the existing window/ComboBox/TextView styles.
 - Network topology is pure data processing under content/planning/network_*.lua.
   It must not invoke native APIs, A*, terrain sampling, GUI events or file writes.
   The explicit corridorRequest handoff is a descriptor, never automatic execution.
@@ -38,7 +57,7 @@ and actual construction remain unverified; scores are explicit planning preferen
   32 and town degree limit 3; neither is a monetary or engineering constraint.
   Keep deterministic ID tie-breaks, input immutability and an explanation per pair.
 - Preserve the existing pure/scanner/UI regression suites. Network fixtures must be
-  labeled synthetic; future live inputs need fresh, independently verified adapters.
+  labeled synthetic; live inputs require fresh, independently verified adapters.
 - The deployable mod is `oz_railway_network_architect/`; repository documentation
   and development tools stay outside it.
 - Keep `modId` as `oz_railway_network_architect`, the display name as
@@ -78,7 +97,7 @@ and actual construction remain unverified; scores are explicit planning preferen
   subscriptions: the shipped company script explicitly subscribes `-- gui events`.
   Keep the engine update resource registration-only: no simulation commands, data
   writes or saved planner state. All planning remains in the existing GUI owner.
-  Subscribe only status, refresh, plan and reactPostInit, guarded by
+  Subscribe only status, refresh, plan, analyzeNetwork and reactPostInit, guarded by
   hasEventSubscriptions as in shipped update examples. Native delivery and explicit
   planning are runtime verified; preserve this communication architecture.
 - The completed A/B probe found nil/no handler entry for both component IDs. It is

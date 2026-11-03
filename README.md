@@ -1,17 +1,28 @@
 # Railway Network Architect
 
-**Phase 5A: pure railway network topology core (awaiting code review).**
+**Phase 5B.1: explicit live-map network analysis (awaiting native verification).**
 
-The new deterministic planner screens normalized town pairs using supplied capacity
-or demand-support evidence, distance, geography and existing-transport assessments.
-It proposes conditional mainline/branch corridor studies, potential interchange hubs,
-physical-rail reuse reviews and explicit reasons for leaving towns disconnected.
-It does not infer passenger demand from town names, industry presence or track adjacency.
+Open the existing RNA panel and press **Analyze Network** to collect a fresh,
+independent town/industry/physical-rail snapshot and run the accepted Phase 5A core.
+Network analysis never runs automatically. Corridor source/destination selection and Plan remain
+available; network and corridor jobs cannot run concurrently.
 
-There is no live network execution or GUI change. Missing evidence remains unknown;
-default planning defers a pair with neither demand support nor sufficient capacity
-at both endpoints. See the [Phase 5A architecture, contracts, synthetic example and tests](docs/phase_5a_network_topology.md).
-All previous local work is preserved. No staging update, commits or pushes.
+The panel reports conditional mainlines/branches, potential hubs, towns left without
+new rail and inspectable reasons for proposed and deferred links. Residential capacity
+is a proxy, not measured passenger demand. Demand, terrain suitability, existing
+transport-service quality, economics and construction remain unverified. Industry
+presence never creates a freight recommendation; physical track proximity never
+establishes operational service. No terrain A* runs during network analysis.
+
+Live studies cap at 32 towns / 496 pairs. Collection uses bounded batches and the
+existing GUI owner; inventory scripts do not share their snapshots. Larger town maps
+return an explicit unsupported result, not a truncated proposal. Optional inventory
+limits/failures produce visible warnings. Zero recommendations can be a valid result.
+
+See the [Phase 5B.1 evidence, policy audit, performance limits, exact update steps and
+manual acceptance procedure](docs/phase_5b1_live_network.md), and the unchanged
+[Phase 5A contracts and synthetic example](docs/phase_5a_network_topology.md).
+All previous local work is preserved. No staging update, commit or push was performed.
 
 **Phase 4B.4 presentation background (awaiting native verification):**
 
@@ -91,9 +102,9 @@ uv run --no-project --offline --with lupa==2.8 python tests/run_lua_tests.py
 ```
 
 The suite includes 22 original planning tests, 20 railway tests, 20 hierarchical
-planning tests, 6 pure preview tests, 25 topology tests and 70 live-planning/UI tests
-(163 total). Static checks cover 40 Lua files. Mock tests do not prove native rendering
-or callback latency. Stop after Phase 5A for code review.
+planning tests, 6 pure preview tests, 25 topology tests and 92 live-planning/UI tests
+(185 total). Static checks cover 43 Lua files. Mock tests do not prove native rendering
+or callback latency. Stop after Phase 5B.1 for code review.
 
 ## Phase 4A planning core
 
@@ -120,10 +131,10 @@ sites, and railway adjacency does not establish operational routing. The prototy
 owns its local snapshot and reports these limits; it does not validate construction.
 
 Run `uv run --no-project --offline --with lupa==2.8 python tests/run_lua_tests.py`.
-This reuses the existing cached development runtime. The suite covers 163 tests
+This reuses the existing cached development runtime. The suite covers 185 tests
 across core planning, hierarchy, railway, presentation and live/UI behavior, and prints a
 three-corridor synthetic comparison. **Do not copy tests or repository documentation
-into staging. Stop after Phase 5A for code review.**
+into staging. Stop after Phase 5B.1 for code review.**
 
 ## Documented API invocation correction
 

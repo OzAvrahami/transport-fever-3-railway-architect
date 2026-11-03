@@ -3,6 +3,7 @@ local builtin = ug_require "::/gui/main/builtin.lua"
 local area = ug_require "::/gui/main/main_mod_button_area.tl"
 local flow = ug_require "oz_railway_network_architect::/live_plan_data.lua"
 local preview = ug_require "oz_railway_network_architect::/live_plan_preview.lua"
+local networkData = ug_require "oz_railway_network_architect::/network_live_data.lua"
 local eventId = "oz_railway_network_architect.plan"
 
 -- Native window content is instantiated by the game's window container, never in
@@ -22,6 +23,8 @@ local PlannerWindow = react.RegisterWrapperRecipe("OzRailwayNetworkArchitectWind
         local previewConfirmed = react.useState(false)
         local candidate = react.useState("")
         local candidateRef = react.useRef("")
+        local networkLink = react.useState("")
+        local networkLinkRef = react.useRef("")
 
         local function isLive()
             return not view:hasExpired() and alive:get() and params.isCurrent()
@@ -52,7 +55,16 @@ local PlannerWindow = react.RegisterWrapperRecipe("OzRailwayNetworkArchitectWind
                     error("api.gui.fireGuiScriptEvent: malformed town record index=" .. index, 0)
                 end
             end
+            if value.networkSummary ~= nil and not networkData.valid(value.networkSummary, value) then
+                error("api.gui.fireGuiScriptEvent: invalid network summary", 0)
+            end
             local old = current:get()
+            local linkId = networkLinkRef:get()
+            if not old or old.world ~= value.world or old.epoch ~= value.epoch
+                or old.networkRequestId ~= value.networkRequestId or not networkData.find(value.networkSummary, linkId) then
+                linkId = value.networkSummary and value.networkSummary.links[1] and value.networkSummary.links[1].id or ""
+            end
+            networkLinkRef:set(linkId); networkLink:set(linkId)
             if value.preview ~= nil and not preview.valid(value.preview, value) then
                 error("api.gui.fireGuiScriptEvent: invalid corridor summary", 0)
             end
@@ -177,6 +189,17 @@ local PlannerWindow = react.RegisterWrapperRecipe("OzRailwayNetworkArchitectWind
                 errorState:set(""); previewConfirmed:set(false); send("refresh", {})
             end,
         }
+        children[#children + 1] = builtin.Button {
+            content = text("Analyze Network"),
+            meta = {enabled = state.canAnalyze == true and not state.busy and not transportFailed:get()},
+            onClick = function()
+                if not isLive() or sending:get() or transportFailed:get() then return end
+                local snapshot = current:get()
+                if not snapshot or snapshot.busy or not snapshot.canAnalyze then return end
+                errorState:set(""); previewConfirmed:set(false)
+                send("analyzeNetwork", {world = snapshot.world, epoch = snapshot.epoch, requestId = snapshot.networkRequestId + 1})
+            end,
+        }
         children[#children + 1] = text("Status: " .. state.status .. " | Towns: " .. #state.towns)
         children[#children + 1] = text(errorState:old() ~= "" and errorState:old() or state.message)
         children[#children + 1] = text("Approximate town anchors. Corridors are not construction-ready.")
@@ -202,6 +225,31 @@ local PlannerWindow = react.RegisterWrapperRecipe("OzRailwayNetworkArchitectWind
             }
         end
         for _, line in ipairs(preview.lines(summary, candidate:old())) do children[#children + 1] = text(line) end
+        children[#children + 1] = text("Network: " .. (state.networkStatus or "idle") .. " | "
+            .. (state.networkMessage or "No network analysis requested."))
+        local networkSummary = previewConfirmed:old() and not transportFailed:get() and state.networkSummary or nil
+        if networkSummary then
+            for _, line in ipairs(networkSummary.lines) do children[#children + 1] = text(line) end
+            if #networkSummary.links > 0 then
+                local items = {}
+                for _, link in ipairs(networkSummary.links) do
+                    items[#items + 1] = builtin.ComboBoxItem {value = link.id, content = text(link.label)}
+                end
+                children[#children + 1] = builtin.ComboBox {
+                    meta = {class = "rna-planner-town"}, value = networkLink:old(), items = items,
+                    onValueChange = function(id)
+                        if not isLive() or transportFailed:get() then return end
+                        local latest = current:get()
+                        if not latest or latest.world ~= state.world or latest.epoch ~= state.epoch
+                            or latest.networkRequestId ~= state.networkRequestId
+                            or not networkData.find(latest.networkSummary, id) then return end
+                        networkLinkRef:set(id); networkLink:set(id)
+                    end,
+                }
+                local link = networkData.find(networkSummary, networkLink:old())
+                for _, line in ipairs(link and link.lines or {}) do children[#children + 1] = text(line) end
+            end
+        end
         return builtin.Window {
             meta = {class = "rna-planner-window"},
             id = "oz_railway_network_architect.plan.window",

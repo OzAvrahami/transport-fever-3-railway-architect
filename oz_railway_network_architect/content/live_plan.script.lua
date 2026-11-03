@@ -2,6 +2,7 @@ local adapter = ug_require "oz_railway_network_architect::/live_plan_api.lua"
 local flow = ug_require "oz_railway_network_architect::/live_plan_data.lua"
 local request = ug_require "oz_railway_network_architect::/live_plan_request.lua"
 local preview = ug_require "oz_railway_network_architect::/live_plan_preview.lua"
+local network = ug_require "oz_railway_network_architect::/network_live_request.lua"
 local config = flow.config()
 local eventId = "oz_railway_network_architect.plan"
 local prefix = "[RNA:PLAN:4B2] "
@@ -9,11 +10,12 @@ local function report(message) debugPrint(prefix .. message) end
 
 local function newState(previous)
     return {epoch = (previous and previous.epoch or 0) + 1, requestId = 0,
-        polls = 0, tick = nil, towns = {}, listVersion = 0, status = "waiting",
+        networkRequestId = 0, polls = 0, tick = nil, towns = {}, listVersion = 0, status = "waiting",
         message = "Waiting for a loaded world and tick advance; briefly unpause."}
 end
 
 local function reset(state, reason)
+    if state.network then network.invalidate(state.network, reason) end
     if state.request then request.invalidate(state.request, reason) end
     report("SESSION_RESET reason=" .. flow.text(reason))
     return newState(state)
@@ -34,7 +36,7 @@ end
 
 local function startCatalog(state)
     state.catalog = {cursor = 1, towns = {}, rejected = 0, errors = 0}
-    state.towns, state.request = {}, nil
+    state.towns, state.request, state.network = {}, nil, nil
     state.listVersion = state.listVersion + 1
     state.status, state.message = "loading", "Loading town list..."
 end
@@ -74,13 +76,22 @@ local function collect(state)
     if ended - began > config.workBudgetSeconds then error("town_collection_performance_limit", 0) end
 end
 
+local function busy(state)
+    return (state.request ~= nil and not state.request.finished) or (state.network ~= nil and not state.network.finished)
+end
+
 local function response(state, accepted, reason)
     local r = state.request
     local towns = {}
     for _, town in ipairs(state.towns) do towns[#towns + 1] = {id = town.id, name = town.name} end
     return {epoch = state.epoch, world = state.world, tick = state.tick, listVersion = state.listVersion,
         requestId = state.requestId, accepted = accepted, reason = reason, towns = towns,
-        status = state.status, message = state.message, busy = r ~= nil and not r.finished,
+        status = state.status, message = state.message, busy = busy(state),
+        networkRequestId = state.networkRequestId,
+        canAnalyze = state.ready == true and state.catalog == nil and not busy(state),
+        networkStatus = state.network and state.network.status or "idle",
+        networkMessage = state.network and state.network.message or "No network analysis requested.",
+        networkSummary = state.network and state.network.summary or nil,
         canPlan = state.ready == true and state.catalog == nil and #towns >= 2
             and (state.status ~= "error" or (r ~= nil and r.finished)),
         candidates = r and r.result and #r.result.candidates or 0,
@@ -104,7 +115,7 @@ local function update(state)
         report("UI_SESSION_READY status=waiting request=none communication=trace-v1 handler=guiHandleEvent")
     end
     state.polls = state.polls + 1
-    local active = state.catalog or (state.request and not state.request.finished)
+    local active = state.catalog or busy(state)
     if not active and state.polls ~= 1 and state.polls % 30 ~= 0 then return state end
     local world
     state, world = synchronize(state)
@@ -148,6 +159,7 @@ local function update(state)
             end
         end
     end
+    if state.network and not state.network.finished then network.step(state.network) end
     return state
 end
 
@@ -159,6 +171,7 @@ function data()
             local ok, updated = pcall(update, state)
             if ok then state = updated else
                 if state.request then request.invalidate(state.request, "session_update_failed") end
+                if state.network then network.invalidate(state.network, "session_update_failed") end
                 if state.status ~= "error" then report("ERROR detail=" .. flow.text(updated)) end
                 state.status, state.message, state.catalog = "error", flow.text(updated), nil
             end
@@ -200,7 +213,7 @@ function data()
                 traceEvent("HANDLER_ROUTE accepted=false reason=event_name_prefix"); return
             end
             name = name:sub(#eventId + 2)
-            if name ~= "status" and name ~= "plan" and name ~= "refresh" then
+            if name ~= "status" and name ~= "plan" and name ~= "refresh" and name ~= "analyzeNetwork" then
                 traceEvent("HANDLER_ROUTE accepted=false reason=event_action"); return
             end
             traceEvent("HANDLER_ROUTE accepted=true action=" .. name)
@@ -210,13 +223,22 @@ function data()
             local ok, detail = pcall(function()
                 state = synchronize(state)
                 if name == "status" then return end
-                if state.request and not state.request.finished then reason = "busy"; return end
+                if busy(state) then reason = "busy"; return end
                 if name == "refresh" then
                     if not state.ready then reason = "world_not_ready"; return end
                     startCatalog(state); accepted = true; return
                 end
                 if type(param) ~= "table" or param.world ~= state.world or param.epoch ~= state.epoch then
                     reason = "stale_session"; return
+                end
+                if name == "analyzeNetwork" then
+                    if not flow.id(param.requestId) or param.requestId ~= state.networkRequestId + 1 then
+                        reason = "duplicate_or_stale_network_request"; return
+                    end
+                    if not state.ready or state.catalog then reason = "not_ready"; return end
+                    state.networkRequestId = param.requestId
+                    state.network = network.start({id = state.world, tick = state.tick}, state.epoch, param.requestId)
+                    accepted = true; return
                 end
                 if not flow.id(param.requestId) or param.requestId ~= state.requestId + 1 then reason = "duplicate_or_stale_request"; return end
                 if not state.ready or state.catalog or (state.status == "error" and not state.request) then reason = "not_ready"; return end

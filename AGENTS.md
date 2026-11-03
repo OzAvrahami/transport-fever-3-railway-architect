@@ -2,12 +2,13 @@
 
 ## Current milestone
 
-Phase 5C.1 only: session-owned editable Network Plan over immutable topology
-recommendations, with the existing read-only corridor handoff preserved. Preserve accepted local work, window styling, subscriptions, inventories
+Phase 5C.2 only: explicit sequential corridor studies for at most four included,
+marked recommendations in the session-owned Network Plan. Preserve the original
+topology result and individual handoff, accepted local work, window styling, subscriptions, inventories
 and corridor algorithms. No automatic network analysis or all-pairs terrain A*.
 World-space rendering remains unresolved; the panel is NOT a map overlay.
 No staging deployment, construction, speculative APIs, commits, tags or pushes.
-Stop after Phase 5C.1 for code review and native verification.
+Stop after Phase 5C.2 for code review and native verification.
 The authoritative planner remains content/planning/ inside the mod.
 
 Topology studies consider supplied demand evidence, distance, geography and transport
@@ -16,6 +17,25 @@ and actual construction remain unverified; scores are explicit planning preferen
 
 ## Development conventions
 
+- Batch coordination lives in network_batch.lua, in the existing GUI owner only.
+  Reuse the plan event with a separate batch envelope/token; no extra subscription.
+  Start only on Study Marked Corridors. Marking/editing never triggers a search.
+- Select included + furtherStudy algorithm recommendations; sort ascending original
+  priority, then canonical edge ID. Reject more than four without truncation.
+- Run one live_plan_request continuation at a time. Do not create a second planner
+  or keep previous terrain grids/routes in batch results. Retain at most four compact
+  terminal summaries and original origin metadata, separate from manual results.
+- Check world/epoch/snapshot/worklist revision every batch step. Before EACH study,
+  reuse handoff.prepare/validate, including the original 60-second collection age.
+  Never refresh the deadline or auto-reanalyze. Expiry discards pending work only;
+  an already accepted route retains its existing per-request validity checks.
+- Busy batches block Plan, individual Study, Analyze Network, edits, Refresh and other
+  batches. Cancel is the only control allowed through busy, with matching identity.
+  Cancel releases the active continuation, discards pending work and retains labeled
+  completed summaries; reload discards everything. No persistence or implicit retry.
+- Only validated terminal complete/ok candidates count as completed studies. Ordinary
+  unsupported/unreachable/search_limit/incomplete outcomes may continue; invalidation,
+  timing/resource/performance errors stop. Start the next study in a later callback.
 - Network Plan owns only copied endpoint/classification references and separate
   user overrides. Never mutate algorithm result scores, evidence or classifications.
   Only algorithm-recommended links are editable; do not add arbitrary/deferred links.

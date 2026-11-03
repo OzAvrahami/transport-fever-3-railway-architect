@@ -130,6 +130,7 @@ local function newSession(overrides, deliveryGate)
     end
     -- Resource modules are loaded once per runtime; isolate config between test games.
     package.loaded["live_plan_request"] = nil
+    package.loaded["network_batch"] = nil
     -- Resolve the actual descriptor exports, rather than assuming registration.
     dofile(CONTENT .. "/live_plan.gs.lua")
     local descriptor = data()
@@ -2114,6 +2115,363 @@ test("worklist: malformed response pauses polling and explicit Refresh removes s
     controls.resultFilter = nil
     find(tree, "Button", "Refresh towns")[1].params.onClick(); render()
     equal(gui:get().worklist, nil); equal(heightReads, 0)
+end)
+
+local function batchToken(gui, action)
+    local s = gui:get()
+    local w = action == "cancel" and s.batch or s.worklist
+    return {world = s.world, epoch = s.epoch, batch = {action = action or "start",
+        requestId = action == "cancel" and s.batch.id or s.batchRequestId + 1,
+        networkRequestId = s.networkRequestId, snapshotId = w.snapshotId, revision = w.revision}}
+end
+local function startBatch(gui, event) return event("plan", batchToken(gui)) end
+local function batchDone(s) return s and s.batch and s.batch.status ~= "running" end
+local function mark(gui, event, ...)
+    for _, id in ipairs({...}) do assert(editNetwork(gui, event, "mark_study", id).accepted) end
+end
+
+test("batch: marks, selections and analysis never start a search; only included marked recommendations qualify", function()
+    local gui, step, _, event = runNetwork(5)
+    equal(startBatch(gui, event).reason, "no_included_marked_recommendations")
+    mark(gui, event, "1:2", "1:4")
+    assert(editNetwork(gui, event, "exclude", "1:2").accepted)
+    step(100); equal(heightReads, 0); equal(gui:get().batch, nil)
+    equal(editNetwork(gui, event, "mark_study", "1:5").reason, "edge_not_in_worklist")
+    assert(startBatch(gui, event).accepted)
+    local b = gui:get().batch
+    equal(b.total, 1); equal(b.queue[1].edgeId, "1:4"); equal(b.active, nil)
+    equal(gui:get().requestId, 0); equal(heightReads, 0)
+end)
+
+test("batch: a complete branch produces compact validated summary and preserves original provenance", function()
+    local gui, _, untilState, event = runNetwork(4)
+    local before = serialize(gui:get().network.result)
+    mark(gui, event, "1:4"); assert(startBatch(gui, event).accepted); untilState(batchDone)
+    local b, dto = gui:get().batch, event("status").batch
+    equal(b.status, "completed"); equal(b.succeeded, 1); equal(b.active, nil); equal(#b.queue, 0)
+    local r = b.results[1]
+    equal(r.sourceId, 1); equal(r.destinationId, 4); equal(r.classification, "branch")
+    equal(r.status, "ok"); assert(r.candidateCount > 0); assert(r.preferred.length > 0)
+    equal(r.origin.worklistDecision.revision, 1); equal(r.constructionStatus, "unverified")
+    equal(serialize(gui:get().network.result), before); equal(gui:get().request, nil)
+    equal(dto.completed, 1); equal(dto.remaining, 0)
+    local function compact(v)
+        if type(v) ~= "table" then assert(type(v) ~= "function" and type(v) ~= "userdata"); return end
+        for k, item in pairs(v) do
+            assert(k ~= "waypoints" and k ~= "grid" and k ~= "samples" and k ~= "planningJob" and k ~= "hierarchy")
+            compact(item)
+        end
+    end
+    compact(b); compact(dto)
+    dto.results[1].origin.classification = "tampered"
+    equal(gui:get().batch.results[1].origin.classification, "branch")
+end)
+
+test("batch: priority then canonical ID ordering is independent of recommendation enumeration", function()
+    local gui, _, _, event = runNetwork(4)
+    mark(gui, event, "1:4", "1:3", "1:2")
+    local rec = gui:get().network.result.recommendations
+    for _, edge in ipairs(rec) do edge.priority = edge.id == "1:4" and 1 or 2 end
+    rec[1], rec[3] = rec[3], rec[1] -- Deliberate synthetic priority tie/permutation.
+    assert(startBatch(gui, event).accepted)
+    local q = gui:get().batch.queue
+    equal(q[1].edgeId, "1:4"); equal(q[2].edgeId, "1:2"); equal(q[3].edgeId, "1:3")
+end)
+
+test("batch: more than four links fails explicitly without truncation or execution", function()
+    local gui, _, _, event = runNetwork(10)
+    assert(#gui:get().network.result.recommendations >= 5)
+    for i = 1, 5 do mark(gui, event, gui:get().network.result.recommendations[i].id) end
+    local response = startBatch(gui, event)
+    equal(response.accepted, false); assert(response.reason:find("5 eligible links; maximum 4", 1, true))
+    equal(gui:get().batch, nil); equal(heightReads, 0)
+end)
+
+test("batch: sequential mixed outcomes use one continuation with a separate next-start callback", function()
+    local gui, step, untilState, event = runNetwork(4)
+    api.engine.terrain.isOnWater = function(p) return p.x > -2500 and p.x < -1000 end
+    mark(gui, event, "1:4", "1:2", "1:3"); assert(startBatch(gui, event).accepted)
+    local starts = 0
+    untilState(function(s)
+        local b = s.batch
+        if b.active then
+            equal(s.request, nil); assert(s.network.finished)
+            equal(#b.results, b.cursor - 1)
+        end
+        local now = logCount("[RNA:BATCH:5C2] STUDY_START")
+        assert(now - starts <= 1); starts = now
+        return batchDone(s)
+    end)
+    local b = gui:get().batch
+    equal(starts, 3); equal(#b.results, 3); equal(b.status, "completed_with_failures")
+    equal(b.unreachable, 1); equal(b.succeeded, 2)
+    local byId = {}; for _, r in ipairs(b.results) do byId[r.edgeId] = r end
+    equal(byId["1:2"].status, "unreachable"); equal(byId["1:2"].candidateCount, 0)
+    equal(byId["1:3"].status, "ok"); equal(byId["1:4"].status, "ok")
+    local count = heightReads; step(100); equal(heightReads, count)
+    equal(gui:get().requestId, 0)
+end)
+
+test("batch: unsupported, unreachable and search-limit are never completed studies", function()
+    for _, mode in ipairs({"unsupported", "unreachable", "search_limit"}) do
+        local gui, step, untilState, event = newSession(mode == "search_limit" and {maxExpansions = 1} or nil)
+        networkFixture(2); entities[2].x, entities[2].y = 0, 1500
+        if mode == "unsupported" then
+            mapBounds = {minX = 10, maxX = 20, minY = -100, maxY = 1600}
+            entities[1].x, entities[2].x = 15, 15
+        elseif mode == "unreachable" then api.engine.terrain.isOnWater = function(p) return p.y > 400 and p.y < 800 end end
+        ready(step, untilState); analyze(gui, event); untilState(networkDone)
+        mark(gui, event, "1:2"); assert(startBatch(gui, event).accepted); untilState(batchDone)
+        local b = gui:get().batch
+        equal(b.status, "completed_with_failures"); equal(b.results[1].status, mode)
+        equal(b.succeeded, 0); equal(b.results[1].candidateCount, 0); equal(b.results[1].preferred, nil)
+    end
+end)
+
+test("batch: snapshot expires between studies without reanalysis or loss of completed summaries", function()
+    local gui, step, untilState, event = runNetwork(4)
+    mark(gui, event, "1:2", "1:4"); assert(startBatch(gui, event).accepted)
+    untilState(function(s) return #s.batch.results == 1 end)
+    equal(gui:get().batch.active, nil); equal(logCount("[RNA:BATCH:5C2] STUDY_START"), 1)
+    clock = gui:get().network.began + 61; step()
+    local b = gui:get().batch
+    equal(b.status, "stopped"); assert(b.reason:find("Analyze Network again", 1, true))
+    equal(b.notStarted, 1); equal(#b.results, 1); equal(b.succeeded, 1); equal(#b.queue, 0)
+    equal(gui:get().networkRequestId, 1); equal(gui:get().worklist.graph.furtherStudy, 2)
+end)
+
+test("batch: expired acceptance and stale worklist tokens cannot create a continuation", function()
+    local gui, _, _, event = runNetwork(4); mark(gui, event, "1:4")
+    local token = batchToken(gui); editNetwork(gui, event, "include", "1:2")
+    equal(event("plan", token).reason, "stale_worklist_snapshot")
+    equal(event("plan", token).reason, "duplicate_or_stale_batch_request")
+    clock = gui:get().network.began + 61
+    assert(startBatch(gui, event).reason:find("network_snapshot_expired", 1, true))
+    equal(gui:get().batch, nil); equal(heightReads, 0)
+end)
+
+test("batch: changed revision or eligibility stops pending work", function()
+    for _, change in ipairs({"revision", "excluded", "unmarked", "snapshot"}) do
+        local gui, step, _, event = runNetwork(4); mark(gui, event, "1:4")
+        assert(startBatch(gui, event).accepted)
+        local s = gui:get()
+        if change == "revision" then s.worklist.revision = s.worklist.revision + 1
+        elseif change == "snapshot" then s.worklist.snapshotId = "stale"
+        elseif change == "excluded" then s.worklist.overrides["1:4"].included = false
+        else s.worklist.overrides["1:4"].furtherStudy = false end
+        step(); equal(s.batch.status, "invalidated"); equal(s.batch.active, nil); equal(heightReads, 0)
+    end
+end)
+
+test("batch: endpoints, town index and capacities are revalidated at each handoff", function()
+    for _, change in ipairs({"deleted", "moved", "capacity", "index"}) do
+        local gui, step, _, event = runNetwork(4); mark(gui, event, "1:4")
+        assert(startBatch(gui, event).accepted)
+        if change == "deleted" then entities[4] = nil
+        elseif change == "moved" then entities[4].x = 20
+        elseif change == "capacity" then entities[4].capacity = 600
+        else ids[#ids + 1] = 100 end
+        step(); assert(batchDone(gui:get())); equal(gui:get().batch.active, nil)
+        equal(logCount("[RNA:BATCH:5C2] STUDY_START"), 0); equal(heightReads, 0)
+    end
+end)
+
+test("batch: busy guard covers all conflicting actions and replay cannot restart a completed batch", function()
+    local gui, _, untilState, event = runNetwork(4); mark(gui, event, "1:4")
+    local token, edit = batchToken(gui), editToken(gui, "reset_all")
+    assert(event("plan", token).accepted); equal(event("plan", token).reason, "busy")
+    equal(submit(gui, event, 1, 2).reason, "busy"); equal(analyze(gui, event).reason, "busy")
+    equal(study(gui, event, "1:2").reason, "busy"); equal(event("plan", edit).reason, "busy")
+    equal(event("refresh").reason, "busy"); equal(gui:get().worklist.revision, 1)
+    untilState(batchDone); equal(event("plan", token).reason, "duplicate_or_stale_batch_request")
+    equal(logCount("[RNA:BATCH:5C2] START"), 1)
+    assert(study(gui, event, "1:4").accepted); equal(startBatch(gui, event).reason, "busy")
+    untilState(completed); assert(submit(gui, event, 4, 1).accepted); untilState(completed)
+    equal(gui:get().request.networkOrigin, nil); equal(gui:get().batch.succeeded, 1)
+end)
+
+test("batch: cancellation invalidates active search and retains only completed summaries", function()
+    local gui, step, untilState, event = runNetwork(4)
+    mark(gui, event, "1:2", "1:3", "1:4"); assert(startBatch(gui, event).accepted)
+    untilState(function(s) return #s.batch.results == 1 end); step()
+    local active = gui:get().batch.active; assert(active)
+    local token = batchToken(gui, "cancel")
+    assert(event("plan", token).accepted); local b = gui:get().batch
+    equal(active.status, "invalidated"); equal(b.status, "cancelled"); equal(b.active, nil)
+    equal(b.succeeded, 1); equal(b.results[1].status, "ok"); equal(b.results[2].status, "cancelled")
+    equal(b.results[2].preferred, nil); equal(b.notStarted, 1); equal(#b.queue, 0)
+    local count = heightReads; step(100); equal(heightReads, count)
+    equal(event("plan", token).reason, "no_running_batch")
+    assert(startBatch(gui, event).accepted)
+    equal(event("plan", token).reason, "stale_batch_cancel")
+    assert(event("plan", batchToken(gui, "cancel")).accepted)
+end)
+
+test("batch: map changes and reactPostInit discard active and pending work without stale results", function()
+    for _, mode in ipairs({"world", "reload"}) do
+        local gui, step, _, event, _, cb = runNetwork(4)
+        mark(gui, event, "1:4"); assert(startBatch(gui, event).accepted); step()
+        local active, token = gui:get().batch.active, batchToken(gui, "cancel")
+        if mode == "world" then worldId = 999; step()
+        else cb.guiHandleEvent(nil, nil, gui, "native", "gameUI", "reactPostInit", {}) end
+        equal(active.status, "invalidated"); equal(gui:get().batch, nil)
+        equal(event("status").batch, nil); equal(event("plan", token).reason, "stale_session")
+    end
+end)
+
+test("batch: resource or timing safety failures stop pending studies", function()
+    for _, status in ipairs({"resource_limit", "performance_limit", "timing_unavailable", "invalidated", "error"}) do
+        local gui, step, _, event = runNetwork(4)
+        mark(gui, event, "1:2", "1:4"); startBatch(gui, event); step()
+        -- Fault injection at the established continuation boundary, not a fake successful route.
+        local r = gui:get().batch.active; r.finished, r.status, r.reason = true, status, "injected_safety_failure"
+        step(); local b = gui:get().batch
+        equal(b.status, "stopped"); equal(b.results[1].status, status)
+        equal(b.succeeded, 0); equal(b.notStarted, 1); equal(b.active, nil)
+    end
+end)
+
+test("batch: malformed or partial success never becomes a completed study", function()
+    local gui, step, _, event = runNetwork(4)
+    mark(gui, event, "1:4"); startBatch(gui, event); step()
+    local r = gui:get().batch.active
+    r.finished, r.status, r.result = true, "ok", {status = "ok", complete = false}
+    step(); local b = gui:get().batch
+    equal(b.status, "stopped"); equal(b.results[1].status, "error"); equal(b.succeeded, 0)
+    equal(b.results[1].candidateCount, 0); equal(b.results[1].preferred, nil)
+end)
+
+test("batch: long-distance continuation works with serialized GUI state and deterministic repeated results", function()
+    local function run()
+        local gui, _, untilState, event = runNetwork(2, function() entities[2].x = -8000 end)
+        local set = gui.set
+        local function copy(v)
+            if type(v) ~= "table" then assert(type(v) ~= "function"); return v end
+            local out = {}; for k, x in pairs(v) do out[k] = copy(x) end; return out
+        end
+        gui.set = function(self, v) set(self, copy(v)) end
+        mark(gui, event, "1:2"); assert(startBatch(gui, event).accepted); untilState(batchDone)
+        local b = gui:get().batch; equal(b.status, "completed")
+        assert(b.results[1].preferred.sections > 1)
+        return serialize(b.results)
+    end
+    equal(run(), run())
+end)
+
+test("batch: fresh bounds check and handoff work budget failures stop without a search", function()
+    for _, mode in ipairs({"bounds", "budget", "world_during_validation"}) do
+        local gui, step, _, event = runNetwork(4)
+        mark(gui, event, "1:4"); assert(startBatch(gui, event).accepted)
+        if mode == "bounds" then mapBounds.maxX = mapBounds.maxX - 100
+        elseif mode == "budget" then clockStep = 0.1
+        else
+            local capacity = api.engine.util.town.getTownCapacityUsage
+            api.engine.util.town.getTownCapacityUsage = function(id) worldId = 100; return capacity(id) end
+        end
+        step(); assert(batchDone(gui:get())); equal(gui:get().batch.active, nil); equal(heightReads, 0)
+    end
+end)
+
+test("batch: UI explicit start, duplicate clicks, progress, cancel and existing selections", function()
+    local gui, step, _, event = runNetwork(4)
+    local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
+    equal(find(tree, "Button", "Study Marked Corridors")[1].params.meta.enabled, false)
+    local combos = find(tree, "ComboBox"); combos[1].params.onValueChange("3"); combos[2].params.onValueChange("2")
+    find(tree, "Button", "Mark for further study")[1].params.onClick(); tree = render()
+    equal(gui:get().batch, nil); equal(heightReads, 0)
+    local start = find(tree, "Button", "Study Marked Corridors")[1]
+    assert(start.params.meta.enabled); start.params.onClick(); start.params.onClick(); tree = render()
+    equal(logCount("[RNA:BATCH:5C2] START"), 1); equal(gui:get().batchRequestId, 1)
+    for _, label in ipairs({"Plan", "Analyze Network", "Study Corridor", "Reset all edits", "Study Marked Corridors"}) do
+        equal(find(tree, "Button", label)[1].params.meta.enabled, false)
+    end
+    assert(find(tree, "Button", "Cancel Batch")[1].params.meta.enabled)
+    step(); poll(); tree = render(); assert(panelText(tree):find("Current: 1:2", 1, true))
+    find(tree, "Button", "Cancel Batch")[1].params.onClick(); tree = render()
+    assert(panelText(tree):find("cancelled", 1, true)); assert(panelText(tree):find("Construction feasibility: unverified", 1, true))
+    equal(find(tree, "ComboBox")[1].params.value, "3"); equal(find(tree, "ComboBox")[2].params.value, "2")
+    equal(controls.events[#controls.events].name, "oz_railway_network_architect.plan.plan")
+    equal(controls.panel.params.initialX, 0.5); equal(controls.panel.params.initialY, 0.5)
+end)
+
+test("batch: stale UI callbacks, unmount and reopen do not replay or silently cancel", function()
+    local gui, _, _, event = runNetwork(4); mark(gui, event, "1:4")
+    local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
+    local start = find(tree, "Button", "Study Marked Corridors")[1].params.onClick
+    start(); tree = render(); local cancel = find(tree, "Button", "Cancel Batch")[1].params.onClick
+    controls.panel.params.onClose(); render(); equal(gui:get().batch.status, "running")
+    controls.launcher.params.onClick(); tree = render(); start(); render(); equal(gui:get().batchRequestId, 1)
+    find(tree, "Button", "Cancel Batch")[1].params.onClick(); tree = render()
+    find(tree, "Button", "Study Marked Corridors")[1].params.onClick(); render()
+    cancel(); render(); equal(gui:get().batch.status, "running"); equal(gui:get().batchRequestId, 2)
+    assert(event("plan", batchToken(gui, "cancel")).accepted); poll(); tree = render()
+    controls.autoJoin = false
+    find(tree, "Button", "Study Marked Corridors")[1].params.onClick()
+    controls.panel.params.onClose(); controls.flush(); equal(gui:get().batchRequestId, 2)
+end)
+
+test("batch: malformed summary pauses polling and cannot revive old results after reanalysis", function()
+    local gui, _, untilState, event = runNetwork(4); mark(gui, event, "1:4")
+    startBatch(gui, event); untilState(batchDone)
+    local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
+    assert(panelText(tree):find("Preferred:", 1, true))
+    controls.resultFilter = function(v) v.batch.epoch = -1; return v end
+    poll(); tree = render(); assert(not panelText(tree):find("Preferred:", 1, true))
+    local count = #controls.events; poll(); poll(); equal(#controls.events, count)
+    controls.resultFilter = nil; find(tree, "Button", "Refresh towns")[1].params.onClick(); render()
+    equal(gui:get().batch, nil); equal(gui:get().worklist, nil)
+end)
+
+test("batch: malformed envelopes cannot bypass routing or mutate worklist", function()
+    local gui, _, _, event = runNetwork(4); mark(gui, event, "1:4")
+    local token = batchToken(gui); token.worklist = editToken(gui, "reset_all").worklist
+    equal(event("plan", token).reason, "invalid_batch_envelope")
+    equal(event("analyzeNetwork", batchToken(gui)).reason, "invalid_batch_envelope")
+    token = batchToken(gui); token.batch.action = "other"
+    equal(event("plan", token).reason, "invalid_batch_action")
+    token = batchToken(gui); token.epoch = -1
+    equal(event("plan", token).reason, "stale_session")
+    equal(gui:get().batch, nil); equal(heightReads, 0); equal(gui:get().worklist.revision, 1)
+end)
+
+test("batch: exactly four studies complete, release route arrays and allow a subsequent explicit batch", function()
+    local gui, _, untilState, event = runNetwork(6, function()
+        entities[5].capacity, entities[5].x, entities[5].y = 2000, 2000, 2000
+        entities[6].x, entities[6].y = -2000, 2000
+    end)
+    assert(#gui:get().network.result.recommendations >= 4)
+    for i = 1, 4 do mark(gui, event, gui:get().network.result.recommendations[i].id) end
+    assert(startBatch(gui, event).accepted); untilState(batchDone)
+    local b = gui:get().batch
+    equal(b.total, 4); equal(#b.results, 4); equal(b.succeeded, 4); equal(b.active, nil)
+    equal(#b.queue, 0); assert(#event("status").batch.lines <= 12)
+    local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
+    assert(panelText(tree):find("Completed: 4", 1, true)); assert(not panelText(tree):find("invalid batch", 1, true))
+    assert(startBatch(gui, event).accepted); equal(gui:get().batch.id, 2); equal(#gui:get().batch.results, 0)
+    assert(event("plan", batchToken(gui, "cancel")).accepted)
+end)
+
+test("batch: next connection rechecks evidence after a successful study", function()
+    local gui, step, untilState, event = runNetwork(4)
+    mark(gui, event, "1:2", "1:4"); startBatch(gui, event)
+    untilState(function(s) return #s.batch.results == 1 end)
+    entities[4].capacity = 401
+    step(); local b = gui:get().batch
+    equal(b.status, "stopped"); assert(b.reason:find("network_capacity_changed", 1, true))
+    equal(b.succeeded, 1); equal(b.notStarted, 1); equal(logCount("[RNA:BATCH:5C2] STUDY_START"), 1)
+end)
+
+test("batch: incomplete studies may continue but are not successful; pending cancellation executes nothing", function()
+    local gui, step, untilState, event = runNetwork(4)
+    mark(gui, event, "1:2", "1:4"); startBatch(gui, event); step()
+    local r = gui:get().batch.active
+    r.finished, r.status, r.reason = true, "incomplete", "injected_missing_samples"
+    step(); equal(gui:get().batch.active, nil); equal(gui:get().batch.succeeded, 0)
+    untilState(batchDone); equal(gui:get().batch.status, "completed_with_failures")
+    equal(gui:get().batch.succeeded, 1); equal(gui:get().batch.results[1].preferred, nil)
+    assert(startBatch(gui, event).accepted); local before = heightReads
+    assert(event("plan", batchToken(gui, "cancel")).accepted); step(100)
+    equal(heightReads, before); equal(gui:get().batch.notStarted, 2); equal(#gui:get().batch.results, 0)
 end)
 
 print("PASS " .. passed .. " live planning/UI tests (mocked engine and React, not TF3 runtime verification)")

@@ -1,6 +1,26 @@
 # Railway Network Architect
 
-**Phase 5C.1: editable Network Plan (awaiting native verification).**
+**Phase 5C.2: explicit batch corridor studies (awaiting code review and native verification).**
+
+After **Analyze Network**, mark included recommendations for further study, then click
+**Study Marked Corridors**. At most four links run sequentially, in original priority
+order; larger selections are rejected without truncation. Marking alone never runs A*.
+**Cancel Batch** stops active/pending work and retains labeled completed summaries.
+The panel reports progress, individual outcomes and compact preferred-route metrics.
+No route is construction-ready. Manual Plan and individual Study Corridor remain available
+when no conflicting job is running; batch results are separate from manual results.
+
+Every next study must pass the unchanged handoff checks and **60-second deadline from
+network collection start**. Expiry stops pending work and asks for Analyze Network again;
+it never reanalyzes automatically or discards your edits to refresh evidence. Reanalysis,
+Refresh and map reload clear the batch. Closing the window alone does not cancel it.
+
+**247 automated tests pass**, including 24 new batch regressions; 47 Lua files pass
+syntax checks. Native rendering, scheduling and state-copy performance remain unverified.
+See the [Phase 5C.2 coordinator, contracts, limits, examples, diff and acceptance report](docs/phase_5c2_batch_corridor_studies.md).
+No staging deployment, commits, tags, pushes or identity/revision changes. Stop for review.
+
+**Phase 5C.1 background: editable Network Plan (awaiting native verification).**
 
 After **Analyze Network**, select a proposed connection and use **Include in plan**,
 **Exclude from plan**, **Restore original recommendation**, or **Mark for further

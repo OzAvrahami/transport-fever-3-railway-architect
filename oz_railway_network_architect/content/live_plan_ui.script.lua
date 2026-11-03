@@ -62,6 +62,19 @@ local PlannerWindow = react.RegisterWrapperRecipe("OzRailwayNetworkArchitectWind
             if value.worklist ~= nil and not worklist.valid(value.worklist, value) then
                 error("api.gui.fireGuiScriptEvent: invalid network worklist", 0)
             end
+            if value.batch ~= nil then
+                local b = value.batch
+                if type(b) ~= "table" or b.world ~= value.world or b.epoch ~= value.epoch
+                    or b.networkRequestId ~= value.networkRequestId or not value.networkSummary
+                    or b.snapshotId ~= value.networkSummary.snapshotId or not flow.id(b.id)
+                    or type(b.running) ~= "boolean" or type(b.lines) ~= "table" or #b.lines > 12
+                    or not flow.id(b.total) or b.total < 1 or b.total > 4 then
+                    error("api.gui.fireGuiScriptEvent: invalid batch summary", 0)
+                end
+                for _, line in ipairs(b.lines) do
+                    if type(line) ~= "string" or #line > 1600 then error("invalid batch summary text", 0) end
+                end
+            end
             if value.corridorOrigin ~= nil then
                 local o = value.corridorOrigin
                 if type(o) ~= "table" or o.world ~= value.world or o.epoch ~= value.epoch
@@ -331,6 +344,47 @@ local PlannerWindow = react.RegisterWrapperRecipe("OzRailwayNetworkArchitectWind
             end,
         }
         if networkSummary and state.studyReason then children[#children + 1] = text(state.studyReason) end
+        local marked = 0
+        for _, entry in ipairs(plan and plan.entries or {}) do
+            if entry.included and entry.furtherStudy then marked = marked + 1 end
+        end
+        children[#children + 1] = text("Batch corridor studies: " .. marked .. " included marked link(s); maximum 4.")
+        if marked > 4 then children[#children + 1] = text("Batch limit exceeded. Restore study flags or exclude links until at most four remain; no links will be silently skipped.") end
+        children[#children + 1] = builtin.Button {
+            content = text("Study Marked Corridors"),
+            meta = {enabled = plan ~= nil and marked > 0 and state.canStudy == true and not state.busy and not transportFailed:get()},
+            onClick = function()
+                if not isLive() or sending:get() or transportFailed:get() or not previewConfirmed:old() then return end
+                local latest = current:get()
+                if not plan or not latest or latest.busy or not latest.canStudy or not latest.worklist
+                    or latest.world ~= state.world or latest.epoch ~= state.epoch
+                    or latest.batchRequestId ~= state.batchRequestId
+                    or latest.worklist.snapshotId ~= plan.snapshotId or latest.worklist.revision ~= plan.revision
+                    or latest.networkRequestId ~= state.networkRequestId then return end
+                errorState:set("")
+                send("plan", {world = latest.world, epoch = latest.epoch,
+                    batch = {action = "start", requestId = latest.batchRequestId + 1,
+                        networkRequestId = latest.networkRequestId, snapshotId = plan.snapshotId, revision = plan.revision}})
+            end,
+        }
+        local batchView = previewConfirmed:old() and not transportFailed:get() and state.batch or nil
+        children[#children + 1] = builtin.Button {
+            content = text("Cancel Batch"),
+            meta = {enabled = batchView ~= nil and batchView.running == true},
+            onClick = function()
+                if not isLive() or sending:get() or transportFailed:get() or not batchView then return end
+                local latest = current:get()
+                if not latest or latest.world ~= state.world or latest.epoch ~= state.epoch
+                    or not latest.batch or not latest.batch.running or latest.batch.id ~= batchView.id then return end
+                errorState:set("")
+                send("plan", {world = latest.world, epoch = latest.epoch,
+                    batch = {action = "cancel", requestId = batchView.id, networkRequestId = batchView.networkRequestId,
+                        snapshotId = batchView.snapshotId, revision = batchView.revision}})
+            end,
+        }
+        if batchView then
+            for _, line in ipairs(batchView.lines) do children[#children + 1] = text(line) end
+        else children[#children + 1] = text("No batch request submitted in this view.") end
         return builtin.Window {
             meta = {class = "rna-planner-window"},
             id = "oz_railway_network_architect.plan.window",

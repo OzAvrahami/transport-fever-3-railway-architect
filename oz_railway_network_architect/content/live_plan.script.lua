@@ -5,6 +5,7 @@ local preview = ug_require "oz_railway_network_architect::/live_plan_preview.lua
 local network = ug_require "oz_railway_network_architect::/network_live_request.lua"
 local handoff = ug_require "oz_railway_network_architect::/network_corridor_handoff.lua"
 local worklist = ug_require "oz_railway_network_architect::/network_worklist.lua"
+local batch = ug_require "oz_railway_network_architect::/network_batch.lua"
 local config = flow.config()
 local eventId = "oz_railway_network_architect.plan"
 local prefix = "[RNA:PLAN:4B2] "
@@ -12,11 +13,12 @@ local function report(message) debugPrint(prefix .. message) end
 
 local function newState(previous)
     return {epoch = (previous and previous.epoch or 0) + 1, requestId = 0,
-        networkRequestId = 0, polls = 0, tick = nil, towns = {}, listVersion = 0, status = "waiting",
+        networkRequestId = 0, batchRequestId = 0, polls = 0, tick = nil, towns = {}, listVersion = 0, status = "waiting",
         message = "Waiting for a loaded world and tick advance; briefly unpause."}
 end
 
 local function reset(state, reason)
+    batch.stop(state.batch, "invalidated", reason)
     if state.network then network.invalidate(state.network, reason) end
     if state.request then request.invalidate(state.request, reason) end
     report("SESSION_RESET reason=" .. flow.text(reason))
@@ -37,6 +39,7 @@ local function synchronize(state)
 end
 
 local function startCatalog(state)
+    state.batch = nil
     state.catalog = {cursor = 1, towns = {}, rejected = 0, errors = 0}
     state.towns, state.request, state.network, state.worklist, state.worklistError = {}, nil, nil, nil, nil
     state.listVersion = state.listVersion + 1
@@ -79,7 +82,8 @@ local function collect(state)
 end
 
 local function busy(state)
-    return (state.request ~= nil and not state.request.finished) or (state.network ~= nil and not state.network.finished)
+    return batch.running(state.batch) or (state.request ~= nil and not state.request.finished)
+        or (state.network ~= nil and not state.network.finished)
 end
 
 local function response(state, accepted, reason)
@@ -91,6 +95,7 @@ local function response(state, accepted, reason)
         requestId = state.requestId, accepted = accepted, reason = reason, towns = towns,
         status = state.status, message = state.message, busy = busy(state),
         networkRequestId = state.networkRequestId,
+        batchRequestId = state.batchRequestId, batch = batch.summary(state.batch),
         canAnalyze = state.ready == true and state.catalog == nil and not busy(state),
         networkStatus = state.network and state.network.status or "idle",
         networkMessage = state.network and state.network.message or "No network analysis requested.",
@@ -175,6 +180,7 @@ local function update(state)
                 .. " status=" .. (state.worklist and "ok" or flow.text(state.worklistError)))
         end
     end
+    batch.step(state.batch, state)
     return state
 end
 
@@ -185,6 +191,7 @@ function data()
             if not state or not state.epoch then state = newState() end
             local ok, updated = pcall(update, state)
             if ok then state = updated else
+                batch.stop(state.batch, "stopped", "session_update_failed")
                 if state.request then request.invalidate(state.request, "session_update_failed") end
                 if state.network then network.invalidate(state.network, "session_update_failed") end
                 if state.status ~= "error" then report("ERROR detail=" .. flow.text(updated)) end
@@ -238,6 +245,24 @@ function data()
             local ok, detail = pcall(function()
                 state = synchronize(state)
                 if name == "status" then return end
+                -- Cancel must be reachable while busy. All other operations retain
+                -- the common busy guard. Reuse the registered plan event only.
+                if type(param) == "table" and param.batch ~= nil then
+                    if name ~= "plan" or type(param.batch) ~= "table" or param.worklist ~= nil
+                        or param.network ~= nil or param.sourceId ~= nil or param.destinationId ~= nil
+                        or param.requestId ~= nil then reason = "invalid_batch_envelope"; return end
+                    if param.world ~= state.world or param.epoch ~= state.epoch then reason = "stale_session"; return end
+                    if param.batch.action == "cancel" then
+                        accepted, reason = batch.cancel(state, param.batch); return
+                    end
+                    if param.batch.action ~= "start" then reason = "invalid_batch_action"; return end
+                    if busy(state) then reason = "busy"; return end
+                    if not state.ready or state.catalog then reason = "not_ready"; return end
+                    local started
+                    started, reason = batch.start(state, param.batch)
+                    if started then state.batch = started; accepted = true end
+                    return
+                end
                 if busy(state) then reason = "busy"; return end
                 if name == "refresh" then
                     if not state.ready then reason = "world_not_ready"; return end
@@ -267,7 +292,7 @@ function data()
                         reason = "duplicate_or_stale_network_request"; return
                     end
                     if not state.ready or state.catalog then reason = "not_ready"; return end
-                    state.worklist, state.worklistError = nil, nil
+                    state.worklist, state.worklistError, state.batch = nil, nil, nil
                     state.networkRequestId = param.requestId
                     state.network = network.start({id = state.world, tick = state.tick}, state.epoch, param.requestId)
                     accepted = true; return

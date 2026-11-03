@@ -2,16 +2,18 @@
 
 ## Current milestone
 
-Phase 4B.1 only: one bounded, read-only live-map corridor planning attempt per
-loaded GUI session. Baseline 05f7fd4 on main; all four inventories are accepted.
-Preserve their files, identity, metadata and revision. No automatic staging update,
-construction, UI, commits, tags, pushes or publication. Stop before Phase 4B.2.
-The authoritative planner is content/planning/ inside the mod. Only its imports
-change from Phase 4A; do not keep a second implementation outside the package.
+Phase 4B.4 only: read-only corridor presentation through the existing verified GUI.
+The complete world-space rendering contract was not established; use the expressly
+authorized in-panel summary fallback, clearly labeled as NOT a map overlay.
+Baseline ea318ea on main; preserve all uncommitted Phase 4B.2 and 4B.3 work, layout,
+event subscriptions and transport. Inventories and planning algorithms remain unchanged.
+No automatic staging update, construction, speculative overlays, commits, tags,
+pushes or publication. Stop after Phase 4B.4 for review and native verification.
+The authoritative planner remains content/planning/ inside the mod.
 
 Future planning must consider road alternatives, demand, distance, existing
 infrastructure and cost. A city or industry does not automatically need rail.
-Those connection decisions and economic calculations are outside Phase 4B.1.
+Those connection decisions and economic calculations are outside Phase 4B.4.
 
 ## Development conventions
 
@@ -36,15 +38,89 @@ Those connection decisions and economic calculations are outside Phase 4B.1.
   its own GUI state. Reuse read functions, never another scanner's session state.
 - Load game modules using verified mod-qualified ug_require paths. Offline tests
   adapt imports to the same canonical files; never independently edit generated copies.
-- Select the closest valid town pair with entity-ID tie-breaking. Report bounding
-  centers as approximate anchors and every endpoint snap. No hardcoded save IDs.
-- Live sampling is capped at 32x32, with integer coordinates and spacing 32/64/128
-  world units. Validate native coordinates before reads. Reject inadequate resolution
-  or approximation. Report buildings/infrastructure obstacles as unaccounted for.
-- Bound town enumeration to 256, read 8 towns or 16 samples every fourth callback,
-  and limit planning to 3,072 expansions. Measure work using the verified GUI timer;
-  stop on work over 50 ms, missing timing, age over 60 s or verifiable world changes.
-  These are prototype limits, not rail standards or a preemptive latency guarantee.
+- Never plan on load. A mod-owned generic React plugin in MainModButtonAreaExtension
+  sends namespaced fireGuiScriptEvent requests to the existing Game Script's
+  guiHandleEvent. Verify registration and interaction contracts against installed
+  sources; do not replace native recipes or invent cross-state communication.
+- MainModButtonAreaExtension returns a horizontal BoxLayout containing only a launcher button. Open the form in a
+  native Window via the verified default window container. ModEntryPointExtension
+  is hosted in an invisible entry-point subtree, not a visible panel container.
+  Keep close/Back/unmount cleanup scoped to this window recipe; never replace native
+  controls. Use component-local refs for reopen state and revalidate session identity.
+- Dispatch fireGuiScriptEvent through react.enqueueJoin, never directly from restricted
+  React deferred/timer work. Guard queued dispatch and responses against unmount,
+  expired state/container and obsolete window generations. Coalesce pending requests;
+  pause polling on communication failure until an explicit retry. Keep window styles
+  mod-scoped, bounded and scrollable; mock layout success is not native verification.
+- Register planner GUI event names through the Game Script engine state's
+  subscriptions: the shipped company script explicitly subscribes `-- gui events`.
+  Keep the engine update resource registration-only: no simulation commands, data
+  writes or saved planner state. All planning remains in the existing GUI owner.
+  Subscribe only status, refresh, plan and reactPostInit, guarded by
+  hasEventSubscriptions as in shipped update examples. Native delivery and explicit
+  planning are runtime verified; preserve this communication architecture.
+- The completed A/B probe found nil/no handler entry for both component IDs. It is
+  removed. Keep normal routing unchanged; no further component-ID experiments.
+  Keep bounded correlation diagnostics and one registration-entity lookup per GUI
+  session. Lookup success alone does not prove handler delivery.
+- Use Window initialX/initialY and the window-container creation parameters for
+  initial normalized placement, with a mod-scoped centered anchor. Never reposition
+  the open window each frame or change unrelated viewport controls. Apply form
+  padding to Window::Content; preserve native title-bar styles and vertical scrolling.
+- Unsupported UI messages describe prototype sampling limits, not railway feasibility.
+  Keep the precise reason in diagnostics and distinguish excessive axis span from
+  boundary-margin failures. Do not change planning limits to improve message wording.
+- The Game Script owns town lists, session epoch, request IDs and results. React
+  owns only transient form/view state. Reject busy, replayed, stale and identical-town
+  requests; no closest-pair fallback. Refresh/reload clears form selection.
+- Build compact panel summaries once from terminal status=ok, complete results only.
+  Exclude incomplete-data, unsupported, unreachable, search/resource-limited and
+  invalidated results, even if they contain some completed candidates. Never describe
+  a corridor as buildable. Retain source IDs, original anchors and snapped XYZ endpoints.
+- Cap presentation at three candidates, 4,096 checked waypoints per candidate and
+  ten summary lines for the locally selected candidate. Transfer no waypoint arrays,
+  terrain grids or continuation state through GUI status polling. Do not rerun A* to
+  switch candidates. Use existing ComboBox/TextView styles and scrolling.
+- Match epoch/world/request IDs before showing summaries. Require a fresh response
+  on reopen; hide on transport errors, new requests, refresh and session reset. Guard
+  candidate callbacks with existing owner lifetime plus request identity. The panel
+  shows a completed snapshot, not ongoing terrain validity or a live map overlay.
+- EdgeRenderable type declarations alone do not establish a complete supported
+  mod-owned polyline integration. React useAction/setActiveOwner are marked internal
+  in installed definitions. Do not invent geometry defaults or take over native tools.
+  Verify rendering, ownership and cleanup together before future world-space work.
+- Entity IDs distinguish duplicate names. Revalidate selected TOWNs and world before
+  accepting each request; sample fresh terrain. Report bounding centers as approximate
+  anchors and every endpoint snap. No hardcoded save IDs.
+- Preserve the short-route 32x32 grid and 32/64/128 spacing policy. Only the existing
+  coverage/margin failure enters hierarchy; no silent fallback from invalid endpoints.
+- Hierarchy uses actual 512-unit coarse samples in a bounded neighborhood and actual
+  64-unit samples in overlapping windows (32x32 maximum). No interpolation from old
+  inventory data. Validate coordinates through the unchanged adapter before reads.
+- Plain-Lua planner start/step continuations advance in existing guiUpdate callbacks.
+  Never retain closures, threads, userdata or coroutine state in GUI session tables.
+  Do not rely on table aliases surviving guiState copies. planner.plan remains the
+  synchronous offline wrapper over the same authoritative incremental search.
+- Limit each live step to 16 sample visits, 64 expansions or 32 final-validation
+  waypoints. Coarse models cap at 64x64; fine models cap at 32x32. Bound a request to
+  32,768 unique samples, 65,536 visits, 49,152 expansions, 128 sections per guide,
+  4,096 waypoints per candidate and three coarse guides. Per-window search caps are
+  12,288 coarse / 3,072 fine. One wider-window retry only; no unbounded retries.
+- Long requests advance once per GUI callback; short requests preserve the every-fourth
+  cadence. Keep the 50 ms observed-work guard and 60 s snapshot age guard. Native API
+  calls, state copying, validation and summary work are not preemptible; zero timing
+  deltas do not prove zero cost. Measure native GUI state-copy overhead in acceptance.
+- Shared lattice/checkpoint samples come from one request cache. Stitch only equal
+  X/Y/Z/water endpoints. Erase loops deterministically and revalidate every final edge
+  and diagonal corner via the canonical grid rules; rank complete routes with common
+  weights. Never publish an unfinished section chain as a candidate.
+- Keep source IDs, original anchors, explicit fine-grid snaps, resolution/section
+  counts and snapshot provenance in outputs. Coarse routes are search guides only;
+  fixed checkpoints and bounded neighborhoods can miss feasible paths. Unknown
+  samples stay excluded, never become zero-height land. Water stays excluded unless
+  explicitly configured otherwise; gradient thresholds remain caller assumptions.
+- Revalidate world/ticks, bounds and selected-town coordinates throughout long work.
+  Cancellation clears pending search/cache/results. No persistent cache or save data.
 - A corridor is a sampled-grid path, never a buildable railway. Scores are planning
   preferences, not game construction costs. Gradient assumptions and weights must
   be explicit/configurable. No invented TF3 gradient or curvature standards.
@@ -64,8 +140,9 @@ Those connection decisions and economic calculations are outside Phase 4B.1.
   height/water queries; clamped out-of-bounds heights are not valid samples.
   Use bounded batches, retain explicit partial/completed status and log summaries
   plus capped error examples, never every sample.
-- Keep the once-only flag out of engine state and GUI SaveData. Reload behavior
-  of callback GUI state must pass real-game verification, including same-process reload.
+- Inventory once-only flags and planning request/session state stay out of engine
+  state and GUI SaveData. Reset on verified gameUI/reactPostInit and world/tick
+  invalidation; verify same-process reload in-game. Repeated plans require new clicks.
 - Do not introduce globals except the documented resource entry point `data`.
 - Validate JSON, metadata, script references and encoding after relevant edits.
   Use an existing Lua checker if available; do not claim static checks prove a

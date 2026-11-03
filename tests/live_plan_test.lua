@@ -74,7 +74,7 @@ end)
 
 -- Mock only documented APIs; actual modules/descriptor/core are loaded below.
 local entities, ids, worldId, tick, clock, clockStep, mapBounds, logs, reads, heightReads, sampleMode
-local corePlan, defaultConfig = planner.plan, flow.config
+local corePlan, coreStep, defaultConfig = planner.plan, planner.step, flow.config
 local realRequire = ug_require
 ug_require = function(resource)
     if resource == "::/scripts/entity_util.tl" then
@@ -89,11 +89,15 @@ local function reset()
     entities = {}; for _, t in ipairs(towns()) do entities[t.id] = t end
     ids, worldId, tick, clock, clockStep = {20, 10}, 99, 10, 1, 0
     mapBounds, logs, reads, heightReads, sampleMode = bounds, {}, 0, 0, "flat"
-    planner.plan, flow.config = corePlan, defaultConfig
+    planner.plan, planner.step, flow.config = corePlan, coreStep, defaultConfig
     api = {type = {ComponentType = {GAME_TIME = "time", TOWN = "town", BOUNDING_VOLUME = "volume"},
         Vec2f = {new = function(x, y) return {x = x, y = y} end}},
         util = {getApplicationTime = function() clock = clock + clockStep; return clock end},
         engine = {
+            system = {gameScriptSystem = {getEntityForGameScript = function(name)
+                equal(name, "oz_railway_network_architect" .. "::/live_plan.gs")
+                return 800
+            end}},
             entityExists = function(id) reads = reads + 1; return id == worldId or entities[id] ~= nil end,
             getComponent = function(id, kind)
                 reads = reads + 1
@@ -117,19 +121,46 @@ local function reset()
         }}
     debugPrint = function(message) logs[#logs + 1] = message end
 end
-local function newSession(overrides)
+local function newSession(overrides, deliveryGate)
     reset()
     flow.config = function()
         local config = defaultConfig()
         for key, value in pairs(overrides or {}) do config[key] = value end
         return config
     end
-    dofile(CONTENT .. "/live_plan.script.lua")
-    local callback = data().guiUpdate
+    -- Resource modules are loaded once per runtime; isolate config between test games.
+    package.loaded["live_plan_request"] = nil
+    -- Resolve the actual descriptor exports, rather than assuming registration.
+    dofile(CONTENT .. "/live_plan.gs.lua")
+    local descriptor = data()
+    local loaded = {}
+    local function resolve(reference)
+        local prefix = "oz_railway_network_architect" .. "::/"
+        local path, export = reference:match("^" .. prefix .. "(.+)@(%w+)$")
+        assert(path and export, "invalid Game Script reference")
+        if not loaded[path] then dofile(CONTENT .. "/" .. path .. ".lua"); loaded[path] = data() end
+        return assert(loaded[path][export], "missing Game Script callback export")
+    end
+    local callbacks = {update = resolve(descriptor.updateScript.fileName),
+        guiUpdate = resolve(descriptor.guiUpdateScript.fileName),
+        guiHandleEvent = resolve(descriptor.guiHandleEventScript.fileName)}
     flow.config = defaultConfig
     local saved
     local gui = {get = function() return saved end, set = function(_, value) saved = value end}
-    local function step(count) for _ = 1, count or 1 do callback(nil, nil, gui) end end
+    -- Shipped company initialization subscribes engine state to GUI event names.
+    -- Model that prerequisite, not the unavailable native dispatcher internals.
+    local subscriptions = {}
+    local engineState = {
+        hasEventSubscriptions = function() return next(subscriptions) ~= nil end,
+        subscribeToEvent = function(_, name) subscriptions[name] = (subscriptions[name] or 0) + 1 end,
+    }
+    callbacks.subscriptions, callbacks.engineState = subscriptions, engineState
+    local function step(count)
+        for _ = 1, count or 1 do
+            if callbacks.update then callbacks.update(nil, engineState, 0) end
+            callbacks.guiUpdate(nil, nil, gui)
+        end
+    end
     local function untilState(predicate)
         for _ = 1, 3000 do
             if predicate(gui:get()) then return end
@@ -137,149 +168,1230 @@ local function newSession(overrides)
         end
         error("session did not reach expected state")
     end
-    return gui, step, untilState
+    local function event(name, param)
+        return callbacks.guiHandleEvent(nil, nil, gui, "test", "oz_railway_network_architect.plan",
+            "oz_railway_network_architect.plan." .. name, param or {})
+    end
+    api.gui = {fireGuiScriptEvent = function(id, name, param)
+        -- Documented seven-argument callback and synchronous result. Native
+        -- broadcast/aggregation internals are unknown: this is one handler only.
+        -- Tests may deny delivery BEFORE handler invocation. A gate is a fault
+        -- model, not a claimed reconstruction of TF3's component-ID resolver.
+        if not subscriptions[name] then return nil end
+        if deliveryGate and not deliveryGate(id, name) then return nil end
+        return callbacks.guiHandleEvent(nil, nil, gui, "test", id, name, param)
+    end}
+    return gui, step, untilState, event, callbacks
 end
-local function begin(step) step(); tick = tick + 1; step(29) end
-local function completed(value) return value and value.finished end
+local function ready(step, untilState)
+    step(); tick = tick + 1
+    untilState(function(s) return s and (s.status == "idle" or s.status == "unsupported" or s.status == "error") end)
+end
+local function submit(gui, event, sourceId, destinationId)
+    local s = gui:get()
+    return event("plan", {world = s.world, epoch = s.epoch, requestId = s.requestId + 1,
+        sourceId = sourceId or 10, destinationId = destinationId or 20})
+end
+local function completed(s) return s and s.request and s.request.finished end
 local function hasLog(fragment)
     for _, line in ipairs(logs) do if line:find(fragment, 1, true) then return true end end
     return false
 end
+local function logCount(fragment)
+    local count = 0
+    for _, line in ipairs(logs) do if line:find(fragment, 1, true) then count = count + 1 end end
+    return count
+end
 
-test("complete GUI path owns data, uses canonical planner and runs once", function()
-    local gui, step, untilState = newSession()
-    step(60); equal(heightReads, 0); assert(not hasLog(" START "))
+test("no automatic plan on map load, status polls or idle callbacks", function()
+    local gui, step, untilState, event = newSession()
+    step(60); equal(heightReads, 0); equal(gui:get().ready, nil)
     tick = tick + 1
+    untilState(function(s) return s and s.status == "idle" end)
+    step(400); for _ = 1, 5 do event("status") end
+    equal(heightReads, 0); equal(gui:get().request, nil); equal(logCount("REQUEST_START"), 0)
+    equal(event("status").message, "No request submitted. Select two towns and press Plan.")
+end)
+
+test("explicit pair preserves direction, canonical core, data and single execution", function()
+    local gui, step, untilState, event = newSession(); ready(step, untilState)
+    equal(submit(gui, event, 20, 10).accepted, true)
     untilState(completed)
-    local session = gui:get()
-    equal(session.status, "ok"); equal(session.pair.start.id, 10); equal(session.pair.destination.id, 20)
-    equal(#session.samples, session.layout.requested); equal(session.result.status, "ok")
-    local again = corePlan(flow.input(session, defaultConfig()))
-    equal(serialize(session.result), serialize(again))
-    assert(hasLog("CANDIDATE rank=1")); assert(hasLog("COMPLETE status=ok")); assert(hasLog("obstacles_unaccounted_for"))
-    assert(hasLog("data_complete=true"))
-    local previousReads, count = reads, #logs
-    step(100); equal(reads, previousReads); equal(#logs, count)
-    equal(session.townsStartTick, 11); equal(session.terrainEndTick, 11); equal(session.planEndTick, 11)
+    local session = gui:get().request
+    equal(session.status, "ok"); equal(session.pair.start.id, 20); equal(session.pair.destination.id, 10)
+    local expected = corePlan(flow.input(session, defaultConfig()))
+    equal(#session.result.candidates, #expected.candidates)
+    for index, c in ipairs(expected.candidates) do
+        local actual, geometry = session.result.candidates[index], {}
+        equal(actual.sourceId, 20); equal(actual.destinationId, 10); equal(actual.refinedSections, 1)
+        equal(actual.sampling.fineSpacing, session.layout.spacing)
+        for key in pairs(c) do geometry[key] = actual[key] end
+        equal(serialize(geometry), serialize(c)) -- Canonical geometry/scoring remains identical.
+    end
+    local count = heightReads; step(300); equal(heightReads, count)
+    equal(logCount("REQUEST_START"), 1); equal(logCount("COMPLETE status="), 1)
+    assert(hasLog("data_complete=true")); assert(hasLog("ENDPOINT_VALIDATION status=ok"))
 end)
-test("fresh GUI sessions plan again and repeated results stay stable", function()
-    local a, stepA, finishA = newSession(); begin(stepA); finishA(completed)
-    local expected = serialize(a:get().result)
-    local b, stepB, finishB = newSession(); begin(stepB); finishB(completed)
-    equal(serialize(b:get().result), expected)
+
+test("duplicate names remain two numeric IDs and identical IDs are rejected", function()
+    local gui, step, untilState, event = newSession()
+    entities[10].name, entities[20].name = "Same", "Same"
+    ready(step, untilState)
+    local townsView = event("status").towns
+    equal(#townsView, 2); equal(townsView[1].name, townsView[2].name)
+    equal(townsView[1].id, 10); equal(townsView[2].id, 20)
+    equal(submit(gui, event, 10, 10).reason, "same_town"); equal(gui:get().request, nil)
+    equal(submit(gui, event).accepted, true); untilState(completed)
 end)
-test("empty and single-town live maps are unsupported without terrain reads", function()
-    for _, listing in ipairs({{}, {10}}) do
-        local gui, step, untilState = newSession(); ids = listing
-        begin(step); untilState(completed)
-        equal(gui:get().status, "unsupported"); equal(gui:get().reason, "fewer_than_two_valid_towns"); equal(heightReads, 0)
+
+test("stale or malformed selections never fall back to nearest towns", function()
+    local gui, step, untilState, event = newSession(); ready(step, untilState)
+    equal(submit(gui, event, "10", 20).reason, "invalid_selected_ids")
+    equal(submit(gui, event, 30, 20).reason, "selection_not_in_town_list")
+    entities[10] = nil
+    equal(submit(gui, event).reason, "selected_town_unavailable")
+    equal(heightReads, 0); equal(gui:get().request, nil)
+    assert(hasLog("ENDPOINT_ERROR id=10 detail=api.engine.entityExists"))
+end)
+
+test("one click token cannot replay, busy clicks rejected, sequential requests sample fresh", function()
+    local gui, step, untilState, event = newSession(); ready(step, untilState)
+    local s = gui:get(); local param = {world = s.world, epoch = s.epoch, requestId = 1, sourceId = 10, destinationId = 20}
+    equal(event("plan", param).accepted, true)
+    equal(event("plan", param).reason, "busy"); equal(event("refresh").reason, "busy")
+    untilState(completed)
+    equal(event("plan", param).reason, "duplicate_or_stale_request")
+    local count, result = heightReads, serialize(gui:get().request.result)
+    equal(submit(gui, event).accepted, true); untilState(completed)
+    assert(heightReads > count); equal(logCount("REQUEST_START"), 2)
+    equal(serialize(gui:get().request.result), result)
+end)
+
+test("world and tick changes invalidate request and stale selection tokens", function()
+    for _, change in ipairs({"id", "tick"}) do
+        local gui, step, untilState, event = newSession(); ready(step, untilState)
+        local old = event("status"); submit(gui, event)
+        untilState(function(s) return s.request and s.request.phase == "sampling" end)
+        local count = heightReads
+        if change == "id" then worldId = 100 else tick = 5 end
+        step(4)
+        equal(heightReads, count); equal(gui:get().request, nil); assert(gui:get().epoch > old.epoch)
+        equal(event("plan", {world = old.world, epoch = old.epoch}).reason, "stale_session")
     end
 end)
+
+test("reactPostInit resets selections/results and fresh map requires a new explicit request", function()
+    local gui, step, untilState, event, callbacks = newSession(); ready(step, untilState)
+    submit(gui, event); untilState(completed); local before = gui:get().epoch
+    callbacks.guiHandleEvent(nil, nil, gui, "test", "gameUI", "reactPostInit", {})
+    equal(gui:get().request, nil); assert(gui:get().epoch > before)
+    ready(step, untilState); local count = heightReads; step(100); equal(heightReads, count)
+    submit(gui, event); untilState(completed); equal(gui:get().request.status, "ok")
+end)
+
+test("empty and single-town maps expose unsupported status without sampling", function()
+    for _, listing in ipairs({{}, {10}}) do
+        local gui, step, untilState, event = newSession(); ids = listing
+        ready(step, untilState)
+        equal(event("status").canPlan, false); equal(gui:get().status, "unsupported"); equal(heightReads, 0)
+    end
+end)
+
 test("native coordinate validity and conversion guard precede terrain reads", function()
-    reset()
-    local adapter = ug_require "oz_railway_network_architect::/live_plan_api.lua"
-    local sample = adapter.sample(bounds, bounds.maxX, 0)
-    equal(sample.valid, false); equal(heightReads, 0)
+    reset(); local adapter = ug_require "oz_railway_network_architect::/live_plan_api.lua"
+    equal(adapter.sample(bounds, bounds.maxX, 0).valid, false); equal(heightReads, 0)
     api.type.Vec2f.new = function(x, y) return {x = x + 0.01, y = y} end
-    sample = adapter.sample(bounds, 0, 0)
+    local sample = adapter.sample(bounds, 0, 0)
     equal(sample.height, nil); equal(heightReads, 0); assert(sample.errors[1]:find("native coordinates differ", 1, true))
 end)
-test("protected missing reads retain API details and force incomplete or unreachable output", function()
-    local gui, step, untilState = newSession(); sampleMode = "missing"
-    begin(step); untilState(completed)
-    equal(gui:get().status, "unreachable") -- Entire height-missing column divides this grid.
-    assert(gui:get().failedSamples > 0); assert(gui:get().failedReads > 0)
+
+test("failed samples preserve API errors and incomplete or unreachable results", function()
+    local gui, step, untilState, event = newSession(); sampleMode = "missing"
+    ready(step, untilState); submit(gui, event); untilState(completed)
+    equal(gui:get().request.status, "unreachable"); assert(gui:get().request.failedSamples > 0)
     assert(hasLog("api.engine.terrain.getHeightAt: synthetic height read failure"))
-    assert(hasLog("reason=\"open_set_exhausted\""))
-    local second, advance, finish = newSession()
+    local second, advance, finish, send = newSession()
     api.engine.terrain.getHeightAt = function(p)
-        heightReads = heightReads + 1
         if p.x == -268 and p.y == -132 then error("one missing corner", 0) end
         return 0
     end
-    begin(advance); finish(completed)
-    equal(second:get().status, "incomplete"); equal(second:get().result.status, "ok")
-    assert(hasLog("data_complete=false"))
+    ready(advance, finish); submit(second, send); finish(completed)
+    equal(second:get().request.status, "incomplete"); assert(hasLog("data_complete=false"))
 end)
-test("water exclusion is unreachable while explicitly configured penalties permit sampled routes", function()
-    local gui, step, untilState = newSession(); sampleMode = "water"
-    begin(step); untilState(completed); equal(gui:get().status, "unreachable")
-    local other, advance, finish = newSession({waterPolicy = "penalize"}); sampleMode = "water"
-    begin(advance); finish(completed); equal(other:get().status, "ok")
-    for _, candidate in ipairs(other:get().result.candidates) do equal(candidate.touchesWater, true) end
-end)
-test("search limit remains distinct from unreachable", function()
-    local gui, step, untilState = newSession({maxExpansions = 1})
-    begin(step); untilState(completed)
-    equal(gui:get().status, "search_limit"); equal(gui:get().result.complete, false)
-    equal(gui:get().result.stats.expansions, 1); equal(#gui:get().result.candidates, 0)
-end)
-test("world ID and tick invalidation stop before further sampling", function()
-    for _, change in ipairs({"id", "tick"}) do
-        local gui, step, untilState = newSession(); begin(step)
-        untilState(function(s) return s and s.phase == "sampling" end)
-        local count = heightReads
-        if change == "id" then worldId = 100 else tick = 5 end
-        untilState(completed)
-        equal(gui:get().status, "invalidated"); equal(heightReads, count); equal(gui:get().result, nil)
+
+test("water exclusion and controlled penalize setting keep accepted behavior", function()
+    for _, policy in ipairs({"exclude", "penalize"}) do
+        local gui, step, untilState, event = newSession({waterPolicy = policy}); sampleMode = "water"
+        ready(step, untilState); submit(gui, event); untilState(completed)
+        equal(gui:get().request.status, policy == "exclude" and "unreachable" or "ok")
+        if policy == "penalize" then assert(gui:get().request.result.candidates[1].touchesWater) end
     end
 end)
-test("town movement and bounds changes invalidate captured provenance", function()
+
+test("search limit remains distinct and next request is allowed", function()
+    local gui, step, untilState, event = newSession({maxExpansions = 1})
+    ready(step, untilState); submit(gui, event); untilState(completed)
+    equal(gui:get().request.status, "search_limit"); equal(gui:get().request.result.stats.expansions, 1)
+    equal(submit(gui, event).accepted, true)
+end)
+
+test("town movement or bounds changes during collection invalidate plan", function()
     for _, change in ipairs({"town", "bounds"}) do
-        local gui, step, untilState = newSession(); begin(step)
-        untilState(function(s) return s and s.phase == "planning" end)
+        local gui, step, untilState, event = newSession(); ready(step, untilState); submit(gui, event)
+        untilState(function(s) return s.request and s.request.phase == "planning" end)
         if change == "town" then entities[10].x = entities[10].x + 1
         else mapBounds = {minX = -2048, maxX = 2049, minY = -1024, maxY = 1024} end
-        untilState(completed)
-        equal(gui:get().status, "invalidated"); equal(gui:get().result, nil)
-        assert(not hasLog("CANDIDATE rank="))
+        untilState(completed); equal(gui:get().request.status, "invalidated"); equal(gui:get().request.result, nil)
     end
 end)
-test("world change during planner execution discards computed candidates", function()
-    local gui, step, untilState = newSession()
-    planner.plan = function(input) local result = corePlan(input); worldId = 100; return result end
-    begin(step); untilState(completed)
-    equal(gui:get().status, "invalidated"); equal(gui:get().result, nil); assert(not hasLog("CANDIDATE rank="))
-    planner.plan = corePlan
+
+test("world change during search discards calculated candidates", function()
+    local gui, step, untilState, event = newSession(); ready(step, untilState)
+    planner.step = function(job, limit) local r = coreStep(job, limit); worldId = 100; return r end
+    submit(gui, event); untilState(completed)
+    equal(gui:get().request.status, "invalidated"); equal(gui:get().request.result, nil)
+    assert(not hasLog("CANDIDATE rank=")); planner.step = coreStep
 end)
-test("time budget and stale snapshot terminate without publishing candidates", function()
-    local gui, step, untilState = newSession(); clockStep = 0.03
-    begin(step); untilState(completed)
-    equal(gui:get().status, "performance_limit"); equal(gui:get().result, nil)
-    assert(hasLog("resumable_search")); assert(not hasLog("CANDIDATE rank="))
-    local other, advance, finish = newSession(); begin(advance)
-    clock = 100
-    finish(completed); equal(other:get().status, "invalidated"); equal(other:get().reason, "snapshot_age_limit_exceeded")
-    local third, nextStep, finishThird = newSession(); begin(nextStep)
-    clock = 2; nextStep(4); clock = 1.5
-    finishThird(completed)
-    equal(third:get().status, "invalidated"); equal(third:get().reason, "application_clock_went_backwards")
+
+test("zero work-clock readings report insufficient resolution, not zero cost", function()
+    local gui, step, untilState, event = newSession(); ready(step, untilState)
+    submit(gui, event); untilState(completed)
+    equal(gui:get().request.maxWorkSeconds, 0)
+    assert(hasLog("work_measurement=insufficient_resolution")); assert(hasLog("zero_is_not_zero_cost=true"))
 end)
-test("timer unavailable or enumeration failure cannot report success", function()
-    local gui, step, untilState = newSession()
+
+test("performance budget, snapshot age and clock reversal remain bounded", function()
+    local gui, step, untilState, event = newSession(); ready(step, untilState); submit(gui, event)
+    clockStep = 0.03; untilState(completed)
+    equal(gui:get().request.status, "performance_limit"); equal(gui:get().request.result, nil)
+    assert(not hasLog("CANDIDATE rank="))
+    for _, backwards in ipairs({false, true}) do
+        local other, advance, finish, send = newSession(); ready(advance, finish); submit(other, send)
+        advance(4); clock = 2; advance(4); clock = backwards and 1.5 or 100
+        finish(completed); equal(other:get().request.status, "invalidated")
+        equal(other:get().request.reason, backwards and "application_clock_went_backwards" or "snapshot_age_limit_exceeded")
+    end
+end)
+
+test("timer and enumeration errors are safe; Refresh towns can recover", function()
+    local gui, step, untilState, event = newSession()
     api.util.getApplicationTime = function() return nil end
-    begin(step); untilState(completed); equal(gui:get().status, "timing_unavailable"); equal(heightReads, 0)
-    local second, advance, finish = newSession()
+    ready(step, untilState); equal(gui:get().status, "error"); equal(heightReads, 0)
+    local second, advance, finish, send = newSession()
     api.engine.getEntitiesWithComponent = function() error("synthetic enumeration failure", 0) end
-    begin(advance); finish(completed); equal(second:get().status, "error")
-    assert(hasLog("api.engine.getEntitiesWithComponent(TOWN): synthetic enumeration failure"))
+    ready(advance, finish); equal(second:get().status, "error"); assert(hasLog("api.engine.getEntitiesWithComponent(TOWN)"))
+    api.engine.getEntitiesWithComponent = function() return {10, 20} end
+    equal(send("refresh").accepted, true)
+    finish(function(s) return s.status == "idle" end); equal(send("status").canPlan, true)
 end)
-test("town enumeration is capped and present non-function bindings are not pre-rejected", function()
-    reset()
-    local adapter = ug_require "oz_railway_network_architect::/live_plan_api.lua"
-    api.engine.terrain.getHeightAt = {}
-    equal(adapter.check(), nil)
-    local sample = adapter.sample(bounds, 0, 0)
-    assert(sample.errors[1]:find("api.engine.terrain.getHeightAt", 1, true))
+
+test("enumeration caps, callable binding assumptions and config limits stay enforced", function()
+    reset(); local adapter = ug_require "oz_railway_network_architect::/live_plan_api.lua"
+    api.engine.terrain.getHeightAt = {}; equal(adapter.check(), nil)
+    assert(adapter.sample(bounds, 0, 0).errors[1]:find("api.engine.terrain.getHeightAt", 1, true))
     local many = {}; for id = 1, 257 do many[id] = id end
-    local ok, reason = pcall(flow.ids, many, 256)
-    equal(ok, false); assert(tostring(reason):find("limit exceeded", 1, true))
-end)
-test("configuration cannot increase the approved workload caps", function()
-    for _, changes in ipairs({{gridLimit = 33}, {maxTowns = 257}, {maxExpansions = 3073},
-        {workBudgetSeconds = 1}, {maxSnap = 97}, {waterPolicy = "guess"}}) do
-        local gui, step = newSession(changes); step()
-        equal(gui:get().status, "unsupported"); equal(reads, 0); equal(heightReads, 0)
+    equal(pcall(flow.ids, many, 256), false)
+    for _, config in ipairs({{gridLimit = 33}, {maxTowns = 257}, {maxExpansions = 3073}, {workBudgetSeconds = 1}}) do
+        local gui, step = newSession(config); step(); equal(gui:get().status, "error"); equal(heightReads, 0)
     end
 end)
-print("PASS " .. passed .. " live planning integration tests (mocked engine, not runtime verification)")
+
+-- Exercise the real GUI recipe with a minimal hook/component mock, not a native UI claim.
+local integrationRequire = ug_require
+-- Ordinary plugin recipes must return a layout; wrapped native Window recipes
+-- have a separate contract. BoxLayout may itself contain leaf widgets.
+local function requirePluginLayout(root)
+    assert(root and root.nodeType == "layout", "Recipe child must be a layout")
+    return root
+end
+local function mountUI()
+    local active
+    local launcherContext = {hooks = {}, cursor = 0}
+    local window, windowRecipe
+    local controls = {adds = 0, removes = 0, focusReturns = 0, expired = false, available = true,
+        autoJoin = true, events = {}, joins = {}}
+    local context = "main"
+    local function inContext(nextContext, fn)
+        local previous = context; context = nextContext
+        local ok, result = pcall(fn)
+        context = previous
+        if not ok then error(result, 0) end
+        return result
+    end
+    controls.inContext = inContext
+    local dispatch = api.gui.fireGuiScriptEvent
+    api.gui.fireGuiScriptEvent = function(id, name, request)
+        assert(context ~= "restricted", "API is currently restricted: api.gui.fireGuiScriptEvent")
+        equal(context, "join") -- this mod routes even user actions through a join
+        controls.events[#controls.events + 1] = {id = id, name = name, request = request}
+        if controls.onDispatch then controls.onDispatch() end
+        local result = dispatch(id, name, request)
+        if controls.resultFilter then return controls.resultFilter(result) end
+        return result
+    end
+    controls.flush = function()
+        local count = 0
+        while #controls.joins > 0 do
+            count = count + 1; assert(count <= 10, "event storm")
+            inContext("join", table.remove(controls.joins, 1))
+        end
+    end
+    local function hook(initial)
+        active.cursor = active.cursor + 1
+        if not active.hooks[active.cursor] then
+            local value, owner = initial, active
+            active.hooks[active.cursor] = {old = function() return value end, get = function() return value end,
+                hasExpired = function() return owner.expired == true end,
+                set = function(_, nextValue)
+                    assert(not owner.expired, "updating expired UI state"); value = nextValue
+                end}
+        end
+        return active.hooks[active.cursor]
+    end
+    local extension = {id = "::MainModButtonAreaExtension"}
+    local built = {type = {Orientation = {Vertical = "vertical", Horizontal = "horizontal"},
+        ScrollBarPolicy = {AlwaysOff = "off", Simple = "simple"}}}
+    for _, kind in ipairs({"Button", "TextView", "ComboBox", "ComboBoxItem", "BoxLayout", "Window", "ScrollArea", "Component"}) do
+        built[kind] = function(params)
+            return {kind = kind, params = params, nodeType = kind == "BoxLayout" and "layout" or "widget"}
+        end
+    end
+    local reactMock = {useState = hook, useRef = hook,
+        RegisterPluginRecipe = function(point, name, fn)
+            equal(point, extension); equal(name, "OzRailwayNetworkArchitect")
+            return function(...) return requirePluginLayout(fn(...)) end
+        end,
+        RegisterWrapperRecipe = function(name, wrapped, fn)
+            equal(name, "OzRailwayNetworkArchitectWindow"); equal(wrapped, built.Window)
+            windowRecipe = fn; return fn
+        end,
+        onMount = function(fn) active.mounted = fn end,
+        onUnmount = function(fn) active.unmounted = fn end,
+        onStepTimer = function(fn, interval, jitter)
+            equal(interval, 0.5); equal(jitter, false); active.timer = fn
+        end,
+        enqueueJoin = function(fn, scope)
+            assert(scope:find("RNA:PLAN:4B2:", 1, true)); controls.joins[#controls.joins + 1] = fn
+        end,
+        iaHandler = function(fn) return fn end,
+        useInputAction = function(name, fn) equal(name, "IA_MENU_BACK"); active.back = fn end,
+        fireEvent = function(target, name)
+            equal(target, nil); equal(name, "focusMainModButtonArea"); controls.focusReturns = controls.focusReturns + 1
+        end,
+    }
+    local windowApi = {
+        addSingletonWindow = function(recipe, params)
+            equal(recipe, windowRecipe)
+            controls.adds = controls.adds + 1
+            controls.windowInitial = {x = params.initialX, y = params.initialY}
+            window = {recipe = recipe, params = params, ctx = window and window.ctx or {hooks = {}, cursor = 0}}
+        end,
+        removeAllWindows = function(recipe)
+            equal(recipe, windowRecipe); controls.removes = controls.removes + 1
+            local previous = window; window = nil
+            if previous and previous.ctx.unmounted then previous.ctx.unmounted() end
+            if previous then previous.ctx.expired = true end
+        end,
+    }
+    local container = {hasExpired = function() return controls.expired end,
+        get = function()
+            assert(not controls.expired, "expired native container dereferenced")
+            return {getApi = function() return windowApi end}
+        end}
+    ug_require = function(path)
+        if path == "::/gui/main/react.lua" then return reactMock end
+        if path == "::/gui/main/builtin.lua" then return built end
+        if path == "::/gui/main/main_mod_button_area.tl" then return {MainModButtonAreaExtension = extension} end
+        if path == "::/gui/main/game_react_globals.tl" then
+            return {getDefaultWindowContainer = function() return controls.available and container or nil end}
+        end
+        return integrationRequire(path)
+    end
+    dofile(CONTENT .. "/live_plan_ui.script.lua")
+    local exports = data()
+    dofile(CONTENT .. "/live_plan_ui.res.lua")
+    local descriptor = data()
+    equal(descriptor.type, "react-plugin ::MainModButtonAreaExtension")
+    equal(descriptor.data.filePath, "oz_railway_network_architect::/live_plan_ui.script@RailwayNetworkArchitect")
+    local function renderRecipe(ctx, recipe, params)
+        return inContext("restricted", function()
+            active = ctx; ctx.cursor = 0
+            local tree = recipe(params)
+            if not ctx.didMount then
+                ctx.didMount = true
+                if ctx.mounted then ctx.mounted() end
+                active = ctx; ctx.cursor = 0; tree = recipe(params)
+            end
+            return tree
+        end)
+    end
+    local function render()
+        local launcher = renderRecipe(launcherContext, exports.RailwayNetworkArchitect)
+        local panel = window and renderRecipe(window.ctx, window.recipe, window.params) or nil
+        if controls.autoJoin then
+            controls.flush()
+            if window then panel = renderRecipe(window.ctx, window.recipe, window.params) end
+        end
+        controls.pluginRoot, controls.launcher, controls.panel = launcher, launcher.params.children[1], panel
+        return {kind = "TestRoots", params = {children = {launcher, panel}}}
+    end
+    controls.back = function() assert(window); window.ctx.back() end
+    controls.detachWindow = function()
+        local previous = window; window = nil
+        if previous and previous.ctx.unmounted then previous.ctx.unmounted() end
+        if previous then previous.ctx.expired = true end
+    end
+    controls.expireWindow = function() window.ctx.expired = true end
+    controls.unmountLauncher = function()
+        launcherContext.unmounted(); launcherContext.expired = true
+    end
+    controls.oldDetach = function() return window.ctx.unmounted end
+    local tree = render()
+    return render, function()
+        if window and window.ctx.timer then inContext("restricted", window.ctx.timer) end
+        if controls.autoJoin then controls.flush() end
+    end, tree, controls
+end
+
+local function find(tree, kind, label)
+    local found = {}
+    local function visit(node)
+        if type(node) ~= "table" then return end
+        if node.kind == kind and (not label or (node.params.content and node.params.content.params.text == label)) then
+            found[#found + 1] = node
+        end
+        if node.kind then
+            visit(node.params.content)
+            visit(node.params.layout)
+            for _, child in ipairs(node.params.children or node.params.items or {}) do visit(child) end
+        end
+    end
+    visit(tree); return found
+end
+
+test("launcher plugin requires a horizontal layout root containing exactly one Button", function()
+    local gui, step, untilState = newSession(); ready(step, untilState)
+    local render, poll, tree, controls = mountUI()
+    local root = controls.pluginRoot
+    equal(root.kind, "BoxLayout"); equal(root.nodeType, "layout")
+    equal(root.params.orientation, "horizontal"); equal(#root.params.children, 1)
+    equal(root.params.children[1].kind, "Button"); equal(controls.launcher.nodeType, "widget")
+    equal(requirePluginLayout(root), root)
+    local ok, reason = pcall(requirePluginLayout, controls.launcher)
+    equal(ok, false); assert(tostring(reason):find("Recipe child must be a layout", 1, true))
+    equal(controls.panel, nil); equal(heightReads, 0)
+end)
+
+test("registered UI routes selection and one click through the real handler", function()
+    local gui, step, untilState, event = newSession()
+    entities[10].name, entities[20].name = "Twin", "Twin"
+    ready(step, untilState)
+    local render, poll, tree = mountUI()
+    equal(logCount("UI_INIT"), 1); equal(heightReads, 0)
+    find(tree, "Button", "Railway Network Architect")[1].params.onClick()
+    tree = render()
+    local combos = find(tree, "ComboBox")
+    equal(#combos, 2)
+    equal(combos[1].params.items[2].params.content.params.text, "Twin [#10]")
+    equal(combos[1].params.items[3].params.content.params.text, "Twin [#20]")
+    combos[1].params.onValueChange("10")
+    tree = render(); combos = find(tree, "ComboBox")
+    equal(combos[2].params.items[2].params.available, false)
+    combos[2].params.onValueChange("10")
+    tree = render(); equal(find(tree, "Button", "Plan")[1].params.meta.enabled, false)
+    find(tree, "ComboBox")[2].params.onValueChange("20")
+    tree = render(); local button = find(tree, "Button", "Plan")[1]
+    equal(button.params.meta.enabled, true)
+    button.params.onClick(); button.params.onClick()
+    tree = render() -- queued user action joins before the Game Script processes it
+    equal(logCount("REQUEST_START"), 1)
+    tree = render(); equal(find(tree, "Button", "Plan")[1].params.meta.enabled, false)
+    untilState(completed); poll(); tree = render()
+    equal(find(tree, "Button", "Plan")[1].params.meta.enabled, true)
+    find(tree, "Button", "Plan")[1].params.onClick(); render(); untilState(completed)
+    equal(logCount("REQUEST_START"), 2)
+end)
+
+test("UI session change clears selections and broken transport displays an error", function()
+    local gui, step, untilState, event, callbacks = newSession(); ready(step, untilState)
+    local render, poll, tree = mountUI()
+    find(tree, "Button", "Railway Network Architect")[1].params.onClick()
+    tree = render(); find(tree, "ComboBox")[1].params.onValueChange("10")
+    tree = render(); find(tree, "ComboBox")[2].params.onValueChange("20")
+    callbacks.guiHandleEvent(nil, nil, gui, "test", "gameUI", "reactPostInit", {})
+    poll(); tree = render()
+    for _, combo in ipairs(find(tree, "ComboBox")) do equal(combo.params.value, "") end
+    api.gui.fireGuiScriptEvent = function() error("transport failed", 0) end
+    poll(); tree = render()
+    local found = false
+    for _, textNode in ipairs(find(tree, "TextView")) do
+        if textNode.params.text:find("Interface error: transport failed", 1, true) then found = true end
+    end
+    equal(found, true); equal(heightReads, 0)
+end)
+
+test("launcher is a single button and form is a native window with verified focus/close options", function()
+    local gui, step, untilState = newSession(); ready(step, untilState)
+    local render, poll, tree, controls = mountUI()
+    equal(controls.launcher.kind, "Button"); equal(#find(controls.launcher, "ComboBox"), 0)
+    equal(controls.panel, nil); equal(controls.adds, 0); equal(heightReads, 0)
+    controls.launcher.params.onClick(); tree = render()
+    equal(controls.adds, 1); equal(controls.panel.kind, "Window")
+    equal(#find(controls.launcher, "ComboBox"), 0); equal(#find(controls.panel, "ComboBox"), 2)
+    local properties = controls.panel.params
+    equal(properties.closable, true); equal(properties.movable, true)
+    equal(properties.autoFocusOnBecomingVisible, true); equal(properties.autoVisibilityOnFocusChange, false)
+    equal(properties.id, "oz_railway_network_architect.plan.window")
+    controls.launcher.params.onClick(); tree = render(); equal(controls.panel, nil)
+    equal(controls.removes, 1); equal(controls.focusReturns, 1)
+    controls.launcher.params.onClick(); tree = render(); controls.panel.params.onClose()
+    tree = render(); equal(controls.panel, nil); equal(controls.focusReturns, 2)
+    controls.launcher.params.onClick(); tree = render(); controls.back()
+    tree = render(); equal(controls.panel, nil); equal(controls.focusReturns, 3)
+    poll(); equal(heightReads, 0); equal(logCount("REQUEST_START"), 0)
+end)
+
+test("reopening preserves selection, closing never cancels planning, and refresh still clears selection", function()
+    local gui, step, untilState = newSession(); ready(step, untilState)
+    local render, poll, tree, controls = mountUI()
+    controls.launcher.params.onClick(); tree = render()
+    find(tree, "ComboBox")[1].params.onValueChange("10"); tree = render()
+    find(tree, "ComboBox")[2].params.onValueChange("20"); tree = render()
+    controls.panel.params.onClose(); tree = render()
+    controls.launcher.params.onClick(); tree = render()
+    equal(find(tree, "ComboBox")[1].params.value, "10"); equal(find(tree, "ComboBox")[2].params.value, "20")
+    find(tree, "Button", "Plan")[1].params.onClick()
+    render() -- only an already dispatched request continues after closing
+    controls.panel.params.onClose(); tree = render(); untilState(completed)
+    equal(gui:get().request.status, "ok")
+    controls.launcher.params.onClick(); tree = render()
+    equal(find(tree, "Button", "Plan")[1].params.meta.enabled, true)
+    equal(logCount("REQUEST_START"), 1)
+    find(tree, "Button", "Refresh towns")[1].params.onClick(); tree = render()
+    for _, combo in ipairs(find(tree, "ComboBox")) do equal(combo.params.value, "") end
+end)
+
+test("closed-window session reset clears restored selection before new request", function()
+    local gui, step, untilState, event, callbacks = newSession(); ready(step, untilState)
+    local render, poll, tree, controls = mountUI()
+    controls.launcher.params.onClick(); tree = render()
+    find(tree, "ComboBox")[1].params.onValueChange("10"); tree = render()
+    find(tree, "ComboBox")[2].params.onValueChange("20"); tree = render()
+    controls.panel.params.onClose(); tree = render()
+    callbacks.guiHandleEvent(nil, nil, gui, "test", "gameUI", "reactPostInit", {})
+    ready(step, untilState)
+    controls.launcher.params.onClick(); tree = render()
+    for _, combo in ipairs(find(tree, "ComboBox")) do equal(combo.params.value, "") end
+    equal(find(tree, "Button", "Plan")[1].params.meta.enabled, false)
+    equal(heightReads, 0); equal(logCount("REQUEST_START"), 0)
+end)
+
+test("window and launcher teardown are scoped, and delayed old detach cannot close a reopened window", function()
+    local gui, step, untilState = newSession(); ready(step, untilState)
+    local render, poll, tree, controls = mountUI()
+    controls.launcher.params.onClick(); tree = render()
+    local oldDetach = controls.oldDetach()
+    controls.launcher.params.onClick(); tree = render()
+    controls.launcher.params.onClick(); tree = render()
+    oldDetach(); tree = render()
+    equal(controls.launcher.params.content.params.text, "Close Railway Network Architect")
+    equal(controls.panel.kind, "Window")
+    controls.detachWindow(); tree = render()
+    equal(controls.launcher.params.content.params.text, "Railway Network Architect")
+    controls.launcher.params.onClick(); tree = render()
+    local previous = controls.removes
+    controls.unmountLauncher(); equal(controls.removes, previous + 1)
+    equal(heightReads, 0)
+end)
+
+test("missing or expired native container fails without speculative fallback or planning", function()
+    local gui, step, untilState = newSession(); ready(step, untilState)
+    local render, poll, tree, controls = mountUI()
+    controls.available = false; controls.launcher.params.onClick(); tree = render()
+    equal(controls.adds, 0); equal(controls.panel, nil)
+    assert(controls.launcher.params.meta.tooltip:find("native window container unavailable", 1, true))
+    controls.available = true; controls.launcher.params.onClick(); tree = render()
+    equal(controls.adds, 1)
+    controls.expired = true; controls.unmountLauncher()
+    equal(controls.removes, 0); equal(heightReads, 0)
+    assert(hasLog("UI_ERROR detail=game_react_globals.getDefaultWindowContainer"))
+end)
+
+test("restricted mount and timer only enqueue; main-thread joins coalesce status requests", function()
+    local gui, step, untilState = newSession(); ready(step, untilState)
+    local render, poll, tree, controls = mountUI()
+    controls.autoJoin = false
+    local ok, reason = pcall(function()
+        controls.inContext("restricted", function() api.gui.fireGuiScriptEvent("test", "test", {}) end)
+    end)
+    equal(ok, false); assert(tostring(reason):find("API is currently restricted", 1, true))
+    equal(#controls.events, 0); equal(#controls.joins, 0)
+    controls.launcher.params.onClick(); tree = render()
+    equal(#controls.events, 0); equal(#controls.joins, 1)
+    for _ = 1, 20 do poll() end
+    equal(#controls.joins, 1); equal(#controls.events, 0)
+    controls.flush(); tree = render()
+    equal(#controls.events, 1); assert(controls.events[1].name:match("%.status$"))
+    equal(#find(tree, "ComboBox")[1].params.items, 3)
+    poll(); equal(#controls.events, 1); controls.flush()
+    poll(); controls.flush(); equal(#controls.events, 3)
+    equal(logCount("UI_ERROR"), 0); equal(logCount("REQUEST_START"), 0); equal(heightReads, 0)
+end)
+
+test("Plan and Refresh each dispatch once in joins with queued-click protection", function()
+    local gui, step, untilState = newSession(); ready(step, untilState)
+    local render, poll, tree, controls = mountUI()
+    controls.launcher.params.onClick(); tree = render()
+    find(tree, "ComboBox")[1].params.onValueChange("10"); tree = render()
+    find(tree, "ComboBox")[2].params.onValueChange("20"); tree = render()
+    controls.autoJoin = false
+    local button = find(tree, "Button", "Plan")[1]
+    for _ = 1, 10 do button.params.onClick() end
+    equal(#controls.joins, 1); equal(logCount("REQUEST_START"), 0)
+    controls.flush(); equal(logCount("REQUEST_START"), 1)
+    equal(controls.events[2].request.sourceId, 10); equal(controls.events[2].request.destinationId, 20)
+    button.params.onClick(); equal(#controls.joins, 0)
+    untilState(completed); poll(); controls.flush(); tree = render()
+    local refresh = find(tree, "Button", "Refresh towns")[1]
+    refresh.params.onClick(); refresh.params.onClick()
+    equal(#controls.joins, 1); controls.flush(); tree = render()
+    equal(logCount("ROUTE_PROBE_BEGIN"), 0)
+    assert(controls.events[#controls.events].name:match("%.refresh$"))
+    for _, combo in ipairs(find(tree, "ComboBox")) do equal(combo.params.value, "") end
+    equal(logCount("REQUEST_START"), 1)
+end)
+
+test("unmount cancels pending dispatch and stale handlers cannot update a reopened form", function()
+    local gui, step, untilState = newSession(); ready(step, untilState)
+    local render, poll, tree, controls = mountUI(); controls.autoJoin = false
+    controls.launcher.params.onClick(); tree = render()
+    local oldSelection = find(tree, "ComboBox")[1].params.onValueChange
+    local oldRefresh = find(tree, "Button", "Refresh towns")[1].params.onClick
+    controls.detachWindow(); tree = render()
+    controls.launcher.params.onClick(); tree = render()
+    equal(#controls.joins, 2)
+    oldSelection("10"); oldRefresh()
+    controls.flush(); tree = render()
+    equal(#controls.events, 1); equal(find(tree, "ComboBox")[1].params.value, "")
+    equal(logCount("REQUEST_START"), 0); equal(heightReads, 0)
+end)
+
+test("expired state, launcher or native container discards queued work without dispatch", function()
+    for _, expiry in ipairs({"state", "container", "launcher"}) do
+        local gui, step, untilState = newSession(); ready(step, untilState)
+        local render, poll, tree, controls = mountUI(); controls.autoJoin = false
+        controls.launcher.params.onClick(); render()
+        if expiry == "state" then controls.expireWindow()
+        elseif expiry == "launcher" then controls.unmountLauncher()
+        else controls.expired = true end
+        controls.flush(); equal(#controls.events, 0); equal(heightReads, 0)
+    end
+end)
+
+test("closing before a queued Plan joins cancels dispatch, not an accepted planner request", function()
+    local gui, step, untilState = newSession(); ready(step, untilState)
+    local render, poll, tree, controls = mountUI()
+    controls.launcher.params.onClick(); tree = render()
+    find(tree, "ComboBox")[1].params.onValueChange("10"); tree = render()
+    find(tree, "ComboBox")[2].params.onValueChange("20"); tree = render()
+    find(tree, "Button", "Plan")[1].params.onClick()
+    equal(#controls.joins, 1)
+    controls.panel.params.onClose(); controls.flush()
+    equal(#controls.events, 1); equal(logCount("REQUEST_START"), 0); equal(heightReads, 0)
+end)
+
+test("unmount during dispatch prevents response application to expired hooks", function()
+    local gui, step, untilState = newSession(); ready(step, untilState)
+    local render, poll, tree, controls = mountUI(); controls.autoJoin = false
+    controls.launcher.params.onClick(); render()
+    controls.onDispatch = controls.detachWindow
+    controls.flush(); render()
+    equal(#controls.events, 1); equal(controls.panel, nil)
+    equal(logCount("UI_ERROR"), 0); equal(heightReads, 0)
+end)
+
+test("transport failure is visible, pauses polling, and only explicit Refresh retries", function()
+    local gui, step, untilState = newSession(); ready(step, untilState)
+    local render, poll, tree, controls = mountUI()
+    controls.launcher.params.onClick(); tree = render()
+    controls.onDispatch = function() error("native transport unavailable", 0) end
+    poll(); tree = render(); equal(#controls.events, 2); equal(logCount("UI_ERROR"), 1)
+    local visible = false
+    for _, node in ipairs(find(tree, "TextView")) do
+        if node.params.text:find("native transport unavailable", 1, true)
+            and node.params.text:find("Polling paused", 1, true) then visible = true end
+    end
+    equal(visible, true)
+    for _ = 1, 20 do poll() end
+    equal(#controls.events, 2); equal(logCount("UI_ERROR"), 1)
+    controls.onDispatch = nil
+    find(tree, "Button", "Refresh towns")[1].params.onClick(); tree = render()
+    equal(#controls.events, 3); poll(); equal(#controls.events, 4)
+    equal(logCount("REQUEST_START"), 0); equal(heightReads, 0)
+end)
+
+test("native window uses scoped bounded stylesheet, wrapping and scrollable form", function()
+    local gui, step, untilState = newSession(); ready(step, untilState)
+    local render, poll, tree, controls = mountUI()
+    controls.launcher.params.onClick(); tree = render()
+    equal(controls.panel.params.meta.class, "rna-planner-window")
+    local scroll = controls.panel.params.content
+    equal(scroll.kind, "ScrollArea"); equal(scroll.params.horizontalPolicy, "off")
+    equal(scroll.params.verticalPolicy, "simple"); equal(scroll.params.content.kind, "Component")
+    local layout = scroll.params.content.params.layout
+    equal(layout.kind, "BoxLayout"); equal(layout.params.orientation, "vertical")
+    equal(layout.params.meta.class, "rna-planner-form")
+    local styles = {}
+    local env = {require = function(path)
+        equal(path, "::/gui/main/stylesheetutil.lua")
+        return {makeAdder = function(result)
+            return function(selector, properties)
+                assert(selector:find("!rna-planner-", 1, true)); styles[selector] = properties
+                result[#result + 1] = {selector = selector, styleSheet = properties}
+            end
+        end}
+    end}
+    assert(loadfile(CONTENT .. "/live_plan_ui.css.lua", "t", env))()
+    equal(#env.data(), 7)
+    local windowStyle = styles["Window!rna-planner-window"]
+    equal(windowStyle.size[1], 520); equal(windowStyle.size[2], 520)
+    equal(serialize(windowStyle.anchorPoint), serialize({0.5, 0.5}))
+    equal(serialize(windowStyle.gravity), serialize({0.5, 0.5}))
+    equal(windowStyle.transform, nil); equal(windowStyle.margin, nil)
+    local contentStyle = styles["Window!rna-planner-window Window::Content"]
+    equal(serialize(contentStyle.padding), serialize({20, 20, 20, 20}))
+    equal(styles["BoxLayout!rna-planner-form"].padding, nil) -- no ineffective/double inset
+    equal(styles["BoxLayout!rna-planner-form > Button"].gravity[1], 0)
+    equal(styles["ComboBox!rna-planner-town"].minSize[1], -1) -- may shrink
+    equal(styles["ComboBox!rna-planner-town"].gravity[1], -1)
+    -- Stylesheet capacity check only, not native glyph/layout measurement.
+    -- Native builtin.css.lua:1635-1636 gives vertical scrollbar width 8.
+    local availableWidth = windowStyle.minSize[1] - contentStyle.padding[2] - contentStyle.padding[4] - 8
+    assert(styles["ComboBox!rna-planner-town"].maxSize[1] <= availableWidth)
+    assert(styles["TextView!rna-planner-text"].maxSize[1] <= availableWidth)
+    for selector in pairs(styles) do assert(not selector:find("Title", 1, true)) end
+    equal(windowStyle.maxSize[1], 520); equal(windowStyle.maxSize[2], "80vh")
+    equal(styles["TextView!rna-planner-text"].textAutoWrap, true)
+    equal(styles["TextView!rna-planner-text"].maxSize[1], 440)
+    equal(styles["BoxLayout!rna-planner-form"].innerSpacing[2], 8)
+    equal(styles["ComboBox!rna-planner-town"].minSize[2], 32)
+    equal(logCount("REQUEST_START"), 0)
+end)
+
+test("descriptor-resolved event handler receives original ID/name and returns owner town data", function()
+    local gui, step, untilState, event, callbacks = newSession(); ready(step, untilState)
+    local id = "oz_railway_network_architect.plan"
+    local payload = {_rnaTrace = {id = "w1:e1", enabled = true}}
+    local received, original = nil, callbacks.guiHandleEvent
+    callbacks.guiHandleEvent = function(params, engine, owner, src, wireId, wireName, wireParam)
+        received = {owner = owner, id = wireId, name = wireName, param = wireParam}
+        return original(params, engine, owner, src, wireId, wireName, wireParam)
+    end
+    local result = api.gui.fireGuiScriptEvent(id, id .. ".status", payload)
+    equal(received.owner, gui); equal(received.id, id); equal(received.name, id .. ".status")
+    equal(received.param, payload); equal(result.status, "idle"); equal(result._rnaTraceId, "w1:e1")
+    equal(result.towns[1].id, 10); equal(result.towns[1].name, entities[10].name)
+    equal(result.towns[2].id, 20); equal(#result.towns, #gui:get().towns)
+    equal(logCount("COMM HANDLER_ENTRY"), 1); equal(logCount("COMM HANDLER_RESPONSE"), 1)
+    equal(api.gui.fireGuiScriptEvent("wrong", id .. ".status", payload), nil)
+    assert(hasLog("HANDLER_ROUTE accepted=false reason=event_id"))
+    equal(api.gui.fireGuiScriptEvent(id, "status", payload), nil)
+    -- Also unit-test defensive filtering separately from subscription-gated delivery.
+    equal(original(nil, nil, gui, "test", id, "status", payload), nil)
+    assert(hasLog("HANDLER_ROUTE accepted=false reason=event_name_prefix"))
+    equal(api.gui.fireGuiScriptEvent(id, id .. ".unknown", payload), nil)
+    equal(original(nil, nil, gui, "test", id, id .. ".unknown", payload), nil)
+    assert(hasLog("HANDLER_ROUTE accepted=false reason=event_action"))
+    equal(api.gui.fireGuiScriptEvent(id, id .. ".status", nil).status, "idle")
+    assert(hasLog("param_type=nil trace=unavailable"))
+    for _ = 1, 20 do api.gui.fireGuiScriptEvent(id, id .. ".status", nil) end
+    equal(logCount("COMM HANDLER_ENTRY"), 8)
+    equal(logCount("REQUEST_START"), 0); equal(heightReads, 0)
+end)
+
+test("nil handler or discarded return is diagnosed without fabricated towns or repeated errors", function()
+    for _, mode in ipairs({"handler_nil", "propagation_nil"}) do
+        local gui, step, untilState, event, callbacks = newSession(); ready(step, untilState)
+        local original = callbacks.guiHandleEvent
+        if mode == "handler_nil" then callbacks.guiHandleEvent = function() return nil end end
+        local render, poll, tree, controls = mountUI()
+        if mode == "propagation_nil" then controls.resultFilter = function() return nil end end
+        controls.launcher.params.onClick(); tree = render()
+        equal(logCount("COMM GUI_DISPATCH"), 1); equal(logCount("COMM GUI_RESULT type=nil"), 1)
+        equal(logCount("COMM HANDLER_RESPONSE"), mode == "handler_nil" and 0 or 1)
+        assert(hasLog("planner response unavailable; response_type=nil"))
+        equal(#find(tree, "ComboBox")[1].params.items, 1)
+        for _ = 1, 20 do poll() end
+        equal(logCount("UI_ERROR"), 1); equal(#controls.events, 1)
+        callbacks.guiHandleEvent = original; controls.resultFilter = nil
+        find(tree, "Button", "Refresh towns")[1].params.onClick(); tree = render() -- diagnostic only
+        find(tree, "Button", "Refresh towns")[1].params.onClick(); render()
+        untilState(function(s) return s.status == "idle" end); poll(); tree = render()
+        equal(#find(tree, "ComboBox")[1].params.items, 3)
+        equal(logCount("REQUEST_START"), 0); equal(heightReads, 0)
+    end
+end)
+
+test("malformed native responses report precise validation failures and cannot populate the form", function()
+    local cases = {
+        {function() return false end, "response_type=boolean"},
+        {function() return {} end, "towns_type=nil"},
+        {function(v) v.towns = nil; return v end, "towns_type=nil"},
+        {function(v) v.epoch = nil; return v end, "invalid_epoch=nil"},
+        {function(v) v.requestId = nil; return v end, "invalid_request_or_catalog_version"},
+        {function(v) v.status = nil; return v end, "invalid_status_or_message"},
+        {function(v) v.busy = nil; return v end, "invalid_busy_or_canPlan"},
+        {function(v) v.towns = {bad = {id = 10, name = "bad"}}; return v end, "towns response is not an array"},
+        {function(v) v.towns = {[2] = v.towns[2]}; return v end, "malformed town record index=1"},
+        {function(v) v.towns[1].id = nil; return v end, "malformed town record index=1"},
+    }
+    for _, case in ipairs(cases) do
+        local gui, step, untilState = newSession(); ready(step, untilState)
+        local render, poll, tree, controls = mountUI(); controls.resultFilter = case[1]
+        controls.launcher.params.onClick(); tree = render()
+        assert(hasLog(case[2]), case[2]); equal(logCount("UI_ERROR"), 1)
+        equal(#find(tree, "ComboBox")[1].params.items, 1)
+        poll(); equal(#controls.events, 1); equal(heightReads, 0)
+    end
+end)
+
+test("trace IDs correlate dispatch and response, remain distinct on reopen, and logging is capped", function()
+    local gui, step, untilState = newSession(); ready(step, untilState)
+    local render, poll, tree, controls = mountUI()
+    controls.launcher.params.onClick(); render()
+    local first = controls.events[1].request._rnaTrace.id
+    assert(hasLog("response_trace=" .. first))
+    controls.panel.params.onClose(); render(); controls.launcher.params.onClick(); render()
+    local second = controls.events[2].request._rnaTrace.id
+    assert(first ~= second); assert(hasLog("response_trace=" .. second))
+    for _ = 1, 30 do poll() end
+    equal(logCount("COMM GUI_DISPATCH"), 8); equal(logCount("COMM HANDLER_ENTRY"), 8)
+    equal(logCount("COMM HANDLER_ROUTE"), 8); equal(logCount("COMM HANDLER_RESPONSE"), 8)
+    equal(logCount("COMM GUI_RESULT"), 8); equal(logCount("UI_ERROR"), 0)
+    equal(logCount("REQUEST_START"), 0)
+end)
+
+test("event transport preserves rejected and stale requests with actual owner status", function()
+    local gui, step, untilState = newSession(); ready(step, untilState)
+    local id = "oz_railway_network_architect.plan"
+    local state = api.gui.fireGuiScriptEvent(id, id .. ".status", {})
+    local params = {world = state.world, epoch = state.epoch + 1, requestId = state.requestId + 1,
+        sourceId = 10, destinationId = 20, _rnaTrace = {id = "w1:e2", enabled = true}}
+    local rejected = api.gui.fireGuiScriptEvent(id, id .. ".plan", params)
+    equal(rejected.reason, "stale_session"); equal(rejected.status, "idle"); equal(rejected.accepted, false)
+    equal(rejected._rnaTraceId, "w1:e2"); equal(logCount("REQUEST_START"), 0)
+    params.epoch = state.epoch
+    equal(api.gui.fireGuiScriptEvent(id, id .. ".plan", params).accepted, true)
+    equal(api.gui.fireGuiScriptEvent(id, id .. ".plan", params).reason, "busy")
+    untilState(completed)
+    equal(api.gui.fireGuiScriptEvent(id, id .. ".plan", params).reason, "duplicate_or_stale_request")
+    equal(logCount("REQUEST_START"), 1)
+end)
+
+test("new native windows start centered and retain movable bounded content across reopen", function()
+    local gui, step, untilState = newSession(); ready(step, untilState)
+    local render, poll, tree, controls = mountUI()
+    for _ = 1, 2 do
+        controls.launcher.params.onClick(); render()
+        local properties = controls.panel.params
+        equal(properties.initialX, 0.5); equal(properties.initialY, 0.5)
+        equal(controls.windowInitial.x, 0.5); equal(controls.windowInitial.y, 0.5)
+        equal(properties.movable, true); equal(properties.autoFocusOnBecomingVisible, true)
+        equal(properties.meta.class, "rna-planner-window")
+        poll(); render(); equal(controls.adds, controls.removes + 1)
+        properties.onClose(); render(); equal(controls.panel, nil)
+    end
+    equal(controls.adds, 2); equal(controls.removes, 2); equal(logCount("REQUEST_START"), 0)
+end)
+
+local function tenTownFixture()
+    entities, ids = {}, {}
+    for index = 1, 10 do
+        local id = index * 10
+        entities[id] = {id = id, name = "Fixture town " .. index, x = index * 60, y = 0, z = 5}
+        ids[11 - index] = id -- Deliberately reverse enumeration order.
+    end
+end
+
+test("registered owner returns all ten fixture towns and refresh recollects actual fixture data", function()
+    local gui, step, untilState = newSession(); tenTownFixture(); ready(step, untilState)
+    local id = "oz_railway_network_architect.plan"
+    local function status() return api.gui.fireGuiScriptEvent(id, id .. ".status", {}) end
+    local initial = status(); equal(initial.status, "idle"); equal(#initial.towns, 10)
+    for index, town in ipairs(initial.towns) do
+        equal(town.id, index * 10); equal(town.name, entities[town.id].name)
+    end
+    entities[100].name = "Updated fixture town"
+    local refresh = api.gui.fireGuiScriptEvent(id, id .. ".refresh", {})
+    equal(refresh.accepted, true); equal(refresh.status, "loading")
+    equal(#refresh.towns, 0) -- Existing contract: collection is batched, not synchronous.
+    untilState(function(s) return s.status == "idle" end)
+    local refreshed = status(); equal(#refreshed.towns, 10)
+    equal(refreshed.towns[10].name, "Updated fixture town")
+    assert(refreshed.listVersion > initial.listVersion)
+    equal(logCount("REQUEST_START"), 0); equal(heightReads, 0)
+end)
+
+test("denied delivery reproduces nil with no handler entry and does not silently populate the UI", function()
+    -- Explicit hypothesis under test, NOT a verified native routing rule.
+    local gui, step, untilState = newSession(nil, function(id) return id == "" end)
+    tenTownFixture(); ready(step, untilState); equal(#gui:get().towns, 10)
+    local render, poll, tree, controls = mountUI()
+    controls.launcher.params.onClick(); tree = render()
+    equal(logCount("COMM GUI_DISPATCH"), 1); equal(logCount("COMM GUI_RESULT type=nil"), 1)
+    equal(logCount("COMM HANDLER_ENTRY"), 0)
+    equal(#find(tree, "ComboBox")[1].params.items, 1)
+    for _ = 1, 20 do poll() end
+    equal(#controls.events, 1); equal(logCount("UI_ERROR"), 1)
+    find(tree, "Button", "Refresh towns")[1].params.onClick(); render()
+    equal(#controls.events, 2); equal(logCount("COMM HANDLER_ENTRY"), 0)
+    tree = render(); equal(#find(tree, "ComboBox")[1].params.items, 1) -- not applied as fallback data
+    equal(#gui:get().towns, 10); equal(logCount("REQUEST_START"), 0); equal(heightReads, 0)
+end)
+
+test("empty component ID alone still fails the current owner filter and must not be a silent fallback", function()
+    local gui, step, untilState = newSession(nil, function(id) return id == "" end)
+    tenTownFixture(); ready(step, untilState)
+    local result = api.gui.fireGuiScriptEvent("", "oz_railway_network_architect.plan.status",
+        {_rnaTrace = {id = "empty-id-design-check", enabled = true}})
+    equal(result, nil); equal(logCount("COMM HANDLER_ENTRY"), 1)
+    assert(hasLog("HANDLER_ROUTE accepted=false reason=event_id"))
+    equal(logCount("COMM HANDLER_RESPONSE"), 0); equal(#gui:get().towns, 10)
+    equal(logCount("REQUEST_START"), 0); equal(heightReads, 0)
+end)
+
+test("missing engine subscriptions reproduces idle ten-town owner with nil UI response; activation restores delivery", function()
+    local gui, step, untilState, _, callbacks = newSession(); tenTownFixture()
+    local activate = callbacks.update; callbacks.update = nil -- Previous descriptor had no updateScript.
+    ready(step, untilState); equal(#gui:get().towns, 10)
+    local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
+    equal(logCount("COMM HANDLER_ENTRY"), 0); assert(hasLog("GUI_RESULT type=nil"))
+    for _ = 1, 20 do poll() end
+    equal(#controls.events, 1); equal(logCount("UI_ERROR"), 1)
+    callbacks.update = activate; step()
+    find(tree, "Button", "Refresh towns")[1].params.onClick(); tree = render()
+    equal(#controls.events, 2); equal(controls.events[2].name, "oz_railway_network_architect.plan.refresh")
+    equal(gui:get().status, "loading")
+    untilState(function(s) return s.status == "idle" end); poll(); tree = render()
+    equal(#find(tree, "ComboBox")[1].params.items, 11)
+    equal(logCount("EVENT_SUBSCRIPTIONS_READY"), 1); assert(hasLog("HANDLER_RESPONSE type=table"))
+    equal(logCount("REQUEST_START"), 0); equal(heightReads, 0)
+end)
+
+test("registration subscribes exactly four names once even for zero dt; no engine data access", function()
+    local _, _, _, _, callbacks = newSession()
+    local beforeReads = reads
+    for _ = 1, 30 do callbacks.update(nil, callbacks.engineState, 0) end
+    local expected = {['oz_railway_network_architect.plan.status'] = 1,
+        ['oz_railway_network_architect.plan.refresh'] = 1,
+        ['oz_railway_network_architect.plan.plan'] = 1, reactPostInit = 1}
+    equal(serialize(callbacks.subscriptions), serialize(expected))
+    equal(reads, beforeReads); equal(heightReads, 0); equal(logCount("EVENT_SUBSCRIPTIONS_READY"), 1)
+    -- engineState intentionally has no get/set or command API: registration cannot persist planner state.
+end)
+
+test("unsubscribed event never enters handler even when component ID matches", function()
+    local gui, step, untilState = newSession(); ready(step, untilState)
+    local id = "oz_railway_network_architect.plan"
+    equal(api.gui.fireGuiScriptEvent(id, id .. ".unknown", {}), nil)
+    equal(logCount("COMM HANDLER_ENTRY"), 0); equal(gui:get().requestId, 0)
+end)
+
+test("subscribed reactPostInit resets GUI session and requires fresh world readiness", function()
+    local gui, step, untilState = newSession(); ready(step, untilState)
+    local epoch = gui:get().epoch
+    equal(api.gui.fireGuiScriptEvent("gameUI", "reactPostInit", {}), nil)
+    equal(gui:get().epoch, epoch + 1); equal(gui:get().status, "waiting")
+    equal(#gui:get().towns, 0); equal(gui:get().request, nil)
+    step(); tick = tick + 1; untilState(function(s) return s.status == "idle" end)
+    equal(logCount("EVENT_SUBSCRIPTIONS_READY"), 1); equal(logCount("REQUEST_START"), 0)
+end)
+
+test("new script state registers again without sharing subscriptions or request state", function()
+    local _, step, untilState, _, first = newSession(); ready(step, untilState)
+    local gui, nextStep, nextUntil, _, second = newSession()
+    assert(first.subscriptions ~= second.subscriptions); equal(next(second.subscriptions), nil)
+    ready(nextStep, nextUntil)
+    equal(logCount("EVENT_SUBSCRIPTIONS_READY"), 1); equal(gui:get().requestId, 0)
+    equal(second.subscriptions['oz_railway_network_architect.plan.plan'], 1)
+end)
+
+test("Refresh performs one normal request per click with no remaining routing probe", function()
+    local gui, step, untilState = newSession(); tenTownFixture(); ready(step, untilState)
+    local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
+    controls.autoJoin = false
+    local refresh = find(tree, "Button", "Refresh towns")[1]
+    for _ = 1, 10 do refresh.params.onClick() end
+    equal(#controls.joins, 1); controls.flush(); tree = render()
+    equal(#controls.events, 2); equal(controls.events[2].name, "oz_railway_network_architect.plan.refresh")
+    equal(controls.events[2].request._rnaRoutingProbe, nil)
+    equal(logCount("ROUTE_PROBE_BEGIN"), 0); equal(logCount("REQUEST_START"), 0)
+    untilState(function(s) return s.status == "idle" end); poll(); controls.flush(); tree = render()
+    equal(#find(tree, "ComboBox")[1].params.items, 11)
+end)
+
+test("registration lookup uses exact gs resource name once without exposing engine state", function()
+    local gui, step, untilState = newSession(); ready(step, untilState); step(100)
+    equal(logCount("REGISTRATION_LOOKUP"), 1)
+    assert(hasLog("status=resolved entity=800")); equal(gui:get().request, nil)
+end)
+
+test("registration lookup failure is bounded and does not replace owner data", function()
+    local gui, step, untilState = newSession()
+    api.engine.system.gameScriptSystem.getEntityForGameScript = function() error("lookup failed", 0) end
+    ready(step, untilState); step(100)
+    equal(logCount("REGISTRATION_LOOKUP"), 1); assert(hasLog("getEntityForGameScript: lookup failed"))
+    equal(gui:get().status, "idle"); equal(#gui:get().towns, 2); equal(heightReads, 0)
+end)
+
+test("distant towns refine through working event transport without changing selection UI", function()
+    local gui, step, untilState = newSession()
+    mapBounds = {minX = -4096, maxX = 4096, minY = -2048, maxY = 2048}
+    entities[10].x, entities[10].y, entities[10].name = -804, -624, "Morley"
+    entities[20].x, entities[20].y, entities[20].name = 3676, -1268, "Winterton"
+    ready(step, untilState)
+    local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
+    find(tree, "ComboBox")[1].params.onValueChange("10"); tree = render()
+    find(tree, "ComboBox")[2].params.onValueChange("20"); tree = render()
+    find(tree, "Button", "Plan")[1].params.onClick(); render()
+    untilState(completed); poll(); tree = render()
+    equal(gui:get().request.status, "ok")
+    equal(gui:get().request.reason, "refined_routes_validated")
+    local expected = "Completed. Candidates: 1. Details in log."
+    local function messageVisible()
+        for _, node in ipairs(find(tree, "TextView")) do
+            if node.params.text == expected then return true end
+        end
+        return false
+    end
+    equal(gui:get().message, expected); equal(messageVisible(), true)
+    equal(find(tree, "ComboBox")[1].params.value, "10"); equal(find(tree, "ComboBox")[2].params.value, "20")
+    assert(hasLog("[RNA:PLAN:4B3] SUMMARY status=ok"))
+    assert(heightReads > 0); equal(#gui:get().request.result.candidates, 1); equal(logCount("REQUEST_START"), 1)
+    controls.panel.params.onClose(); render(); controls.launcher.params.onClick(); tree = render()
+    equal(messageVisible(), true); equal(logCount("REQUEST_START"), 1)
+end)
+
+test("boundary-margin unsupported case is not mislabeled as distant or impossible", function()
+    local gui, step, untilState, event = newSession()
+    mapBounds = {minX = -100, maxX = 100, minY = -100, maxY = 100}
+    entities[10].x, entities[10].y = 0, 0
+    entities[20].x, entities[20].y = 99.5, 0
+    ready(step, untilState); equal(submit(gui, event).accepted, true); untilState(completed)
+    equal(gui:get().request.reason, "fine_endpoint_approximation_exceeds_limit")
+    equal(gui:get().request.status, "unsupported")
+    assert(not gui:get().message:find("too far apart", 1, true))
+    assert(not gui:get().message:find("impossible", 1, true)); equal(heightReads, 0)
+end)
+
+test("long communication errors remain in the wrapped padded scroll form", function()
+    local gui, step, untilState = newSession(); ready(step, untilState)
+    local render, poll, tree, controls = mountUI()
+    controls.onDispatch = function() error(string.rep("Long diagnostic detail ", 40), 0) end
+    controls.launcher.params.onClick(); tree = render()
+    local seen = false
+    for _, node in ipairs(find(tree, "TextView")) do
+        if node.params.text:find("Long diagnostic detail", 1, true) then
+            seen = true; equal(node.params.meta.class, "rna-planner-text")
+            assert(#node.params.text < 600)
+        end
+    end
+    equal(seen, true); equal(controls.panel.params.content.kind, "ScrollArea")
+    for _ = 1, 20 do poll() end
+    equal(logCount("UI_ERROR"), 1); equal(logCount("REQUEST_START"), 0)
+end)
+
+test("long request exposes bounded progress and cancels on world, town, bounds or reload changes", function()
+    for _, mode in ipairs({"world", "town", "bounds", "reload"}) do
+        local gui, step, untilState, event = newSession()
+        mapBounds = {minX = -1024, maxX = 10000, minY = -2048, maxY = 2048}
+        entities[10].x, entities[10].y = 0, 0; entities[20].x, entities[20].y = 8192, 0
+        ready(step, untilState); submit(gui, event)
+        untilState(function(s) return s.request and s.request.hierarchy and s.request.hierarchy.phase == "fine_sampling" end)
+        local old = gui:get().request
+        assert(gui:get().message:find("Long-distance planning:", 1, true))
+        local before = heightReads
+        if mode == "world" then worldId = 100
+        elseif mode == "town" then entities[20].x = 8193
+        elseif mode == "bounds" then mapBounds = {minX = -1024, maxX = 10001, minY = -2048, maxY = 2048}
+        else api.gui.fireGuiScriptEvent("gameUI", "reactPostInit", {}) end
+        step()
+        equal(old.finished, true); equal(old.status, "invalidated"); equal(old.result, nil)
+        equal(old.hierarchy.cache, nil); equal(heightReads, before)
+        equal(logCount("REQUEST_START"), 1)
+    end
+end)
+
+test("long requests retain freshness and measured work limits", function()
+    for _, mode in ipairs({"age", "performance"}) do
+        local gui, step, untilState, event = newSession()
+        mapBounds = {minX = -1024, maxX = 10000, minY = -2048, maxY = 2048}
+        entities[10].x, entities[10].y = 0, 0; entities[20].x, entities[20].y = 8192, 0
+        ready(step, untilState); submit(gui, event)
+        untilState(function(s) return s.request and s.request.hierarchy ~= nil end)
+        if mode == "age" then clock = clock + 61 else clockStep = 0.03 end
+        untilState(completed)
+        equal(gui:get().request.status, mode == "age" and "invalidated" or "performance_limit")
+        equal(gui:get().request.result, nil); equal(gui:get().request.hierarchy.cache, nil)
+    end
+end)
+
+local preview = ug_require "oz_railway_network_architect::/live_plan_preview.lua"
+local function panelText(tree)
+    local lines = {}
+    for _, node in ipairs(find(tree, "TextView")) do lines[#lines + 1] = node.params.text end
+    return table.concat(lines, "\n")
+end
+
+test("completed real planner result reaches panel summary through unchanged status transport", function()
+    local gui, step, untilState, event = newSession(); ready(step, untilState)
+    local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
+    assert(panelText(tree):find("in-panel only; not a map overlay", 1, true))
+    equal(#find(tree, "ComboBox"), 2); equal(heightReads, 0)
+    find(tree, "ComboBox")[1].params.onValueChange("10"); tree = render()
+    find(tree, "ComboBox")[2].params.onValueChange("20"); tree = render()
+    find(tree, "Button", "Plan")[1].params.onClick(); tree = render()
+    equal(#find(tree, "ComboBox"), 2)
+    untilState(completed); poll(); tree = render()
+    equal(#find(tree, "ComboBox"), 3)
+    local state = gui:get(); local summary = assert(state.request.preview)
+    equal(summary.candidates[1].start.z, -2)
+    equal(summary.candidates[1].destination.x, state.request.result.candidates[1].waypoints[#state.request.result.candidates[1].waypoints].x)
+    assert(panelText(tree):find("Construction feasibility: unverified", 1, true))
+    assert(panelText(tree):find("No path is drawn", 1, true))
+    local sampled, expansions = heightReads, state.request.result.stats.expansions
+    for _ = 1, 20 do poll(); render() end
+    equal(heightReads, sampled); equal(state.request.result.stats.expansions, expansions)
+    equal(logCount("PANEL_SUMMARY"), 1); equal(logCount("REQUEST_START"), 1)
+    equal(state.request.preview, summary) -- built once, not rebuilt by polling
+    equal(summary.candidates[1].waypoints, nil)
+end)
+
+test("candidate switching is local and preserves distinct canonical alternatives", function()
+    local gui, step, untilState = newSession(); ready(step, untilState)
+    -- Actual canonical three-route fixture; only the native owner envelope is mocked.
+    local input = require("tests.corridor_fixtures").comparison()
+    input.grid.spacingX, input.grid.spacingY = 32, 32
+    for _, role in ipairs({"start", "destination"}) do input[role].x = input[role].x * 3.2; input[role].y = input[role].y * 3.2 end
+    for _, cell in ipairs(input.grid.cells) do cell.height = cell.height * 3.2 end
+    local result = corePlan(input); equal(#result.candidates, 3); result.snapshot = {world = worldId}
+    for _, c in ipairs(result.candidates) do
+        c.sourceId, c.destinationId, c.searchStatus, c.refinedSections = 10, 20, "complete", 1
+        c.sampling = {fineSpacing = 32}; c.endpoints = {
+            start = {x = input.start.x, y = input.start.y, distance = 0},
+            destination = {x = input.destination.x, y = input.destination.y, distance = 0}}
+    end
+    local state = gui:get(); state.status, state.requestId = "ok", 1
+    state.request = {finished = true, status = "ok", world = worldId, requestId = 1, sourceId = 10, destinationId = 20,
+        result = result, pair = {start = {id = 10, name = "Twin", x = input.start.x, y = input.start.y},
+            destination = {id = 20, name = "Twin", x = input.destination.x, y = input.destination.y}}}
+    state.request.preview = assert(preview.build(state))
+    local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
+    local count = #controls.events
+    for i = 1, 3 do
+        local c = result.candidates[i]
+        find(tree, "ComboBox")[3].params.onValueChange(c.id); tree = render()
+        equal(find(tree, "ComboBox")[3].params.value, c.id)
+        assert(panelText(tree):find(string.format("Approximate length: %.1f", c.length), 1, true))
+        equal(#controls.events, count); equal(heightReads, 0)
+    end
+    find(tree, "ComboBox")[3].params.onValueChange("nonexistent"); tree = render()
+    equal(find(tree, "ComboBox")[3].params.value, result.candidates[3].id)
+    equal(logCount("REQUEST_START"), 0)
+end)
+
+test("long-distance panel uses full refined result without shipping or redrawing waypoint arrays", function()
+    local gui, step, untilState, event = newSession()
+    mapBounds = {minX = -1024, maxX = 17408, minY = -2048, maxY = 2048}
+    entities[10].x, entities[10].y = 0, 0; entities[20].x, entities[20].y = 16000, 0
+    ready(step, untilState); submit(gui, event); untilState(completed)
+    local c = assert(gui:get().request.preview).candidates[1]
+    equal(c.length, 16000); assert(c.sections > 1); equal(c.spacing, 64)
+    equal(c.start.x, 0); equal(c.destination.x, 16000)
+    local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
+    assert(panelText(tree):find("16000.0 world units", 1, true)); equal(c.waypoints, nil)
+    local sampled = heightReads; for _ = 1, 10 do render() end; equal(heightReads, sampled)
+end)
+
+test("unsupported, unreachable, incomplete and search-limit results never expose a summary", function()
+    for _, mode in ipairs({"unsupported", "unreachable", "incomplete", "search_limit"}) do
+        local gui, step, untilState, event = newSession(mode == "search_limit" and {maxExpansions = 1} or nil)
+        if mode == "unsupported" then entities[10].x, entities[10].y, entities[20].x, entities[20].y = 0, 0, 1, 0
+        elseif mode == "unreachable" then sampleMode = "water"
+        elseif mode == "incomplete" then sampleMode = "missing" end
+        ready(step, untilState); submit(gui, event); untilState(completed)
+        assert(gui:get().status ~= "ok"); equal(event("status").preview, nil)
+        local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
+        equal(#find(tree, "ComboBox"), 2)
+        assert(panelText(tree):find("No eligible corridor summary", 1, true))
+    end
+end)
+
+test("new request replaces summary and stale candidate callbacks cannot restore prior data", function()
+    local gui, step, untilState, event = newSession(); ready(step, untilState)
+    submit(gui, event); untilState(completed)
+    local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
+    local oldChoice = find(tree, "ComboBox")[3].params.onValueChange
+    submit(gui, event, 20, 10); poll(); tree = render(); equal(#find(tree, "ComboBox"), 2)
+    oldChoice("corridor_distance"); tree = render(); equal(#find(tree, "ComboBox"), 2)
+    untilState(completed); poll(); tree = render()
+    local summary = gui:get().request.preview
+    equal(summary.requestId, 2); equal(summary.source.id, 20); equal(summary.destination.id, 10)
+    local selected = find(tree, "ComboBox")[3].params.value
+    oldChoice("nonexistent"); tree = render(); equal(find(tree, "ComboBox")[3].params.value, selected)
+    equal(logCount("PANEL_SUMMARY"), 2); equal(logCount("REQUEST_START"), 2)
+end)
+
+test("world changes, reload and Refresh clear summaries through existing lifecycle", function()
+    for _, mode in ipairs({"world", "reload", "refresh"}) do
+        local gui, step, untilState, event, callbacks = newSession(); ready(step, untilState)
+        submit(gui, event); untilState(completed)
+        local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
+        equal(#find(tree, "ComboBox"), 3)
+        if mode == "world" then worldId = 100
+        elseif mode == "reload" then callbacks.guiHandleEvent(nil, nil, gui, "test", "gameUI", "reactPostInit", {})
+        else find(tree, "Button", "Refresh towns")[1].params.onClick(); render() end
+        poll(); tree = render(); equal(#find(tree, "ComboBox"), 2)
+        equal(gui:get().request, nil); equal(logCount("REQUEST_START"), 1)
+    end
+end)
+
+test("reopen waits for fresh response and unmounted callbacks cannot restore a summary", function()
+    local gui, step, untilState, event = newSession(); ready(step, untilState)
+    submit(gui, event); untilState(completed)
+    local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
+    local oldChoice = find(tree, "ComboBox")[3].params.onValueChange
+    controls.panel.params.onClose(); render(); equal(controls.panel, nil)
+    controls.autoJoin = false; controls.launcher.params.onClick(); tree = render()
+    equal(#find(tree, "ComboBox"), 2)
+    oldChoice("corridor_distance"); equal(#find(render(), "ComboBox"), 2)
+    controls.flush(); tree = render(); equal(#find(tree, "ComboBox"), 3)
+    controls.unmountLauncher(); render(); equal(controls.panel, nil)
+    equal(logCount("REQUEST_START"), 1)
+end)
+
+test("malformed preview pauses polling and explicit refresh recovers without stale data", function()
+    local gui, step, untilState, event = newSession(); ready(step, untilState)
+    submit(gui, event); untilState(completed)
+    local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
+    controls.resultFilter = function(value) value.preview = {kind = "panel_summary"}; return value end
+    poll(); tree = render(); equal(#find(tree, "ComboBox"), 2)
+    assert(panelText(tree):find("invalid corridor summary", 1, true))
+    local count = #controls.events; for _ = 1, 10 do poll(); render() end; equal(#controls.events, count)
+    controls.resultFilter = nil
+    find(tree, "Button", "Refresh towns")[1].params.onClick(); render()
+    untilState(function(s) return s.status == "idle" end); poll(); tree = render()
+    equal(#find(tree, "ComboBox"), 2); equal(logCount("REQUEST_START"), 1)
+end)
+
+test("consumed rejected click token cannot expose summary under a different request ID", function()
+    local gui, step, untilState, event = newSession(); ready(step, untilState)
+    submit(gui, event); untilState(completed); assert(event("status").preview)
+    local rejected = submit(gui, event, 10, 10)
+    equal(rejected.reason, "same_town"); equal(rejected.preview, nil)
+    equal(gui:get().request.preview.requestId, 1); equal(rejected.requestId, 2)
+    local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
+    equal(#find(tree, "ComboBox"), 2); equal(logCount("UI_ERROR"), 0)
+end)
+
+print("PASS " .. passed .. " live planning/UI tests (mocked engine and React, not TF3 runtime verification)")

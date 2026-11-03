@@ -173,4 +173,21 @@ function flow.sameTown(a, b)
     return b ~= nil and a.id == b.id and a.x == b.x and a.y == b.y and a.z == b.z
 end
 
+-- Explicit IDs only: never fall back to nearest towns after a stale selection.
+function flow.selected(towns, bounds, sourceId, destinationId)
+    if not flow.id(sourceId) or not flow.id(destinationId) then return nil, "invalid_selected_ids" end
+    if sourceId == destinationId then return nil, "same_town" end
+    local source, destination
+    for _, town in ipairs(towns) do
+        if flow.validTown(town, bounds) then
+            if town.id == sourceId then source = town end
+            if town.id == destinationId then destination = town end
+        end
+    end
+    if not source or not destination then return nil, "selected_town_unavailable" end
+    local distance = math.sqrt((source.x - destination.x)^2 + (source.y - destination.y)^2)
+    if not flow.finite(distance) or distance == 0 then return nil, "no_distinct_anchor_positions" end
+    return {start = source, destination = destination, distance = distance, method = "user_selected_entity_ids"}
+end
+
 return flow

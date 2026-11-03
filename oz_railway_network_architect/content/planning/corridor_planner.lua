@@ -74,12 +74,12 @@ local function difference(a, b)
     return math.max(0, math.min(1, 1 - shared / shortest))
 end
 
-function planner.plan(input)
+function planner.start(input)
     local valid, model = pcall(grid.validate, input)
     if not valid then
         -- Only documented validation failures become input errors; programming errors propagate.
         if type(model) ~= "table" or not model.code then error(model, 0) end
-        return {status = model.code, complete = false, candidates = {}, profiles = {}, error = model}
+        return {finished = true, result = {status = model.code, complete = false, candidates = {}, profiles = {}, error = model}}
     end
     local result = {status = "ok", complete = true, candidates = {}, profiles = {}, warnings = warnings(model),
         unit = model.unit, unknownCells = model.unknownCells, infrastructureHintCount = model.hintCount,
@@ -89,9 +89,17 @@ function planner.plan(input)
         constraints = {allowDiagonal = model.allowDiagonal, waterPolicy = model.waterPolicy, maxGradient = model.maxGradient},
         stats = {cells = #model.cells, expansions = 0, peakOpen = 0,
             maxCells = model.maxCells, maxExpansions = model.maxExpansions}}
-    local routes = {}
-    for order, profile in ipairs(model.profiles) do
-        local found = search.run(model, profile.weights, model.maxExpansions - result.stats.expansions)
+    return {model = model, result = result, routes = {}, order = 1}
+end
+
+function planner.step(job, limit)
+    if job.finished then return job.result end
+    local model, result, routes = job.model, job.result, job.routes
+    local order, profile = job.order, model.profiles[job.order]
+    if profile then
+        job.search = job.search or search.start(model, profile.weights, model.maxExpansions - result.stats.expansions)
+        local found = search.step(job.search, limit)
+        if not found then return nil end
         local attempt = {name = profile.name, status = found.status, reason = found.reason,
             weights = profile.weights, expansions = found.stats.expansions, searchScore = found.score}
         result.profiles[order] = attempt
@@ -100,11 +108,15 @@ function planner.plan(input)
         if found.status == "search_limit" then result.status, result.complete = "search_limit", false end
         if found.status == "found" then
             local candidate = summarize(model, profile, found)
-            candidate.order, candidate.attempt = order, attempt
+            candidate.order = order
             routes[#routes + 1] = candidate
         end
+        job.order, job.search = order + 1, nil
+        return nil
     end
     -- Compare all alternatives using one policy, not their incomparable search weights.
+    -- GUI state copies need not preserve table aliases across callbacks.
+    for _, candidate in ipairs(routes) do candidate.attempt = result.profiles[candidate.order] end
     table.sort(routes, function(a, b)
         if a.score.total ~= b.score.total then return a.score.total < b.score.total end
         if a.length ~= b.length then return a.length < b.length end
@@ -129,7 +141,15 @@ function planner.plan(input)
     for _, candidate in ipairs(result.candidates) do candidate.edges, candidate.order, candidate.attempt = nil, nil, nil end
     if #result.candidates == 0 and result.complete then result.status = "unreachable" end
     if not result.complete then result.warnings[#result.warnings + 1] = "search_budget_exhausted_alternatives_incomplete" end
+    job.finished = true
+    job.model, job.routes = nil, nil
     return result
+end
+
+function planner.plan(input)
+    local job = planner.start(input)
+    repeat planner.step(job, 49152) until job.finished
+    return job.result
 end
 
 return planner

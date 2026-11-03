@@ -1,225 +1,258 @@
 local adapter = ug_require "oz_railway_network_architect::/live_plan_api.lua"
 local flow = ug_require "oz_railway_network_architect::/live_plan_data.lua"
-local planner = ug_require "oz_railway_network_architect::/planning/corridor_planner.lua"
+local request = ug_require "oz_railway_network_architect::/live_plan_request.lua"
+local preview = ug_require "oz_railway_network_architect::/live_plan_preview.lua"
 local config = flow.config()
-local prefix = "[RNA:PLAN:4B1] "
-
+local eventId = "oz_railway_network_architect.plan"
+local prefix = "[RNA:PLAN:4B2] "
 local function report(message) debugPrint(prefix .. message) end
-local function quoted(value) return string.format("%q", flow.text(value == nil and "unavailable" or value)) end
-local function fail(status, reason) error({status = status, reason = reason}, 0) end
-local function now()
-    local value, reason = adapter.seconds()
-    if not flow.finite(value) then fail("timing_unavailable", reason or "api.util.getApplicationTime unavailable") end
-    return value
+
+local function newState(previous)
+    return {epoch = (previous and previous.epoch or 0) + 1, requestId = 0,
+        polls = 0, tick = nil, towns = {}, listVersion = 0, status = "waiting",
+        message = "Waiting for a loaded world and tick advance; briefly unpause."}
 end
 
-local function finish(session, status, reason)
-    session.finished, session.status, session.reason = true, status, reason
-    if session.samples then
-        report(string.format("TERRAIN processed=%d requested=%d valid=%d invalid=%d failed_samples=%d failed_reads=%d",
-            #session.samples, session.layout.requested, session.validSamples, session.invalidSamples,
-            session.failedSamples, session.failedReads))
-        for _, detail in ipairs(session.examples) do report("READ_ERROR detail=" .. quoted(detail)) end
-        report("SNAPSHOT world=" .. tostring(session.world) .. " towns_start_tick=" .. tostring(session.townsStartTick)
-            .. " towns_end_tick=" .. tostring(session.townsEndTick) .. " terrain_start_tick=" .. tostring(session.terrainStartTick)
-            .. " terrain_end_tick=" .. tostring(session.terrainEndTick) .. " plan_start_tick=" .. tostring(session.planStartTick)
-            .. " plan_end_tick=" .. tostring(session.planEndTick) .. " atomic=false")
+local function reset(state, reason)
+    if state.request then request.invalidate(state.request, reason) end
+    report("SESSION_RESET reason=" .. flow.text(reason))
+    return newState(state)
+end
+
+local function synchronize(state)
+    local world = adapter.world()
+    if state.world ~= nil and flow.worldChanged(state, world) then
+        state = reset(state, "world_identity_or_tick_changed")
     end
-    local result = session.result
-    if result then
-        report("SEARCH status=" .. result.status .. " complete=" .. tostring(result.complete)
-            .. " candidates=" .. #result.candidates .. " expansions=" .. tostring(result.stats and result.stats.expansions or "unavailable")
-            .. " duration_seconds=" .. flow.number(session.searchSeconds))
-        if result.error then report("SEARCH_ERROR path=" .. quoted(result.error.path) .. " detail=" .. quoted(result.error.message)) end
-        for _, profile in ipairs(result.profiles) do
-            report("PROFILE name=" .. profile.name .. " status=" .. profile.status .. " reason=" .. quoted(profile.reason)
-                .. " disposition=" .. tostring(profile.disposition or "none"))
-        end
-        for _, c in ipairs(result.candidates) do
-            report(string.format("CANDIDATE rank=%d id=%s profiles=%s length=%s max_gradient=%s elevation_gain=%s elevation_loss=%s touches_water=%s water_segments=%d water_runs=%d distance_score=%s gradient_score=%s water_obstacle_score=%s relative_score=%s construction=unverified",
-                c.rank, c.id, table.concat(c.generatedBy, ","), flow.number(c.length), flow.number(c.maxGradient),
-                flow.number(c.elevationGain), flow.number(c.elevationLoss), tostring(c.touchesWater), c.waterSegments, c.waterRuns,
-                flow.number(c.score.distance), flow.number(c.score.gradient), flow.number(c.score.waterObstacle), flow.number(c.score.total)))
-        end
+    if world then
+        if state.world == nil then state.world, state.tick = world.id, world.tick
+        elseif world.tick > state.tick then state.ready = true end
+        state.tick = world.tick
+    end
+    return state, world
+end
+
+local function startCatalog(state)
+    state.catalog = {cursor = 1, towns = {}, rejected = 0, errors = 0}
+    state.towns, state.request = {}, nil
+    state.listVersion = state.listVersion + 1
+    state.status, state.message = "loading", "Loading town list..."
+end
+
+local function collect(state)
+    local catalog = state.catalog
+    local began, clockError = adapter.seconds()
+    if not flow.finite(began) then error(clockError or "api.util.getApplicationTime unavailable", 0) end
+    if not catalog.ids then
+        catalog.bounds = adapter.bounds()
+        catalog.ids, catalog.rejected = adapter.ids(config.maxTowns)
     else
-        report("SEARCH status=not_run_or_discarded candidates=0 duration_seconds=" .. flow.number(session.searchSeconds))
-    end
-    report("PERFORMANCE max_work_callback_seconds=" .. flow.number(session.maxWorkSeconds)
-        .. " budget_seconds=" .. flow.number(config.workBudgetSeconds)
-        .. " elapsed_seconds=" .. flow.number(session.started and session.lastSeconds and (session.lastSeconds - session.started))
-        .. " gui_state_copy_and_summary_logging_excluded=true")
-    report("WARNINGS town_centers_are_approximate_anchors;sampled_terrain_only;buildings_and_infrastructure_obstacles_unaccounted_for;no_hard_gradient_limit;relative_scores_not_game_costs;no_construction_validation;water_policy=" .. config.waterPolicy)
-    report("COMPLETE status=" .. status .. " candidates=" .. tostring(result and #result.candidates or 0)
-        .. " data_complete=" .. tostring(session.samples ~= nil and #session.samples == session.layout.requested
-            and session.invalidSamples == 0 and session.failedSamples == 0
-            and session.townErrors == 0 and session.rejectedIds == 0 and session.rejectedTowns == 0)
-        .. " reason=" .. quoted(reason))
-    session.ids, session.towns = nil, nil
-end
-
-local function prepare(session)
-    local pair, reason, stats = flow.select(session.towns, session.bounds, config)
-    session.rejectedTowns = stats and stats.rejected or 0
-    report("TOWNS valid=" .. tostring(stats and stats.valid or 0)
-        .. " rejected=" .. tostring((stats and stats.rejected or 0) + session.rejectedIds)
-        .. " read_errors=" .. session.townErrors)
-    if not pair then fail("unsupported", reason) end
-    session.pair = pair
-    report("SELECT method=" .. pair.method .. " source_distance=" .. flow.number(pair.distance))
-    for _, role in ipairs({"start", "destination"}) do
-        local t = pair[role]
-        report("TOWN role=" .. role .. " id=" .. t.id .. " name=" .. quoted(t.name)
-            .. " source_x=" .. flow.number(t.x) .. " source_y=" .. flow.number(t.y) .. " source_z=" .. flow.number(t.z)
-            .. " position_source=bounding_volume_center")
-    end
-    local layout, layoutReason = flow.layout(pair, session.bounds, config)
-    if not layout then fail("unsupported", layoutReason) end
-    session.layout, session.samples, session.examples = layout, {}, {}
-    session.validSamples, session.invalidSamples, session.failedSamples, session.failedReads = 0, 0, 0, 0
-    report(string.format("GRID columns=%d rows=%d spacing_x=%d spacing_y=%d origin_x=%d origin_y=%d requested=%d unit=world_units",
-        layout.columns, layout.rows, layout.spacing, layout.spacing, layout.originX, layout.originY, layout.requested))
-    for _, role in ipairs({"start", "destination"}) do
-        local p = layout[role]
-        report("ENDPOINT role=" .. role .. " sample_id=" .. p.sampleId .. " x=" .. flow.number(p.x) .. " y=" .. flow.number(p.y)
-            .. " dx=" .. flow.number(p.dx) .. " dy=" .. flow.number(p.dy) .. " snap_distance=" .. flow.number(p.distance)
-            .. " policy=nearest_sample_half_up")
-    end
-    session.phase = "sampling"
-end
-
-local function verifySources(session)
-    local bounds = adapter.bounds()
-    for _, key in ipairs({"minX", "minY", "maxX", "maxY"}) do
-        if bounds[key] ~= session.bounds[key] then fail("invalidated", "map_bounds_changed") end
-    end
-    for _, role in ipairs({"start", "destination"}) do
-        local previous = session.pair[role]
-        local current = adapter.town(previous.id)
-        if not flow.sameTown(previous, current) then
-            fail("invalidated", "selected_town_changed id=" .. previous.id .. " detail=" .. (current.error or "position_or_component_unavailable"))
-        end
-    end
-end
-
-local function work(session, world)
-    if session.phase == "begin" then
-        report("START world=" .. world.id .. " tick=" .. world.tick .. " app_seconds=" .. flow.number(session.started))
-        session.bounds = adapter.bounds()
-        session.ids, session.rejectedIds = adapter.ids(config.maxTowns)
-        session.towns, session.townErrors, session.cursor, session.townsStartTick = {}, 0, 1, world.tick
-        session.phase = "towns"
-    elseif session.phase == "towns" then
-        local last = math.min(session.cursor + 7, #session.ids)
-        for index = session.cursor, last do
-            local record = adapter.town(session.ids[index])
-            session.towns[#session.towns + 1] = record
-            if record.error then
-                session.townErrors = session.townErrors + 1
-                if session.townErrors <= 4 then report("TOWN_ERROR id=" .. record.id .. " detail=" .. quoted(record.error)) end
+        local last = math.min(catalog.cursor + 7, #catalog.ids)
+        for i = catalog.cursor, last do
+            local town = adapter.town(catalog.ids[i])
+            if flow.validTown(town, catalog.bounds) then
+                catalog.towns[#catalog.towns + 1] = {id = town.id, name = type(town.name) == "string" and flow.text(town.name) or "unavailable"}
+            else catalog.rejected = catalog.rejected + 1 end
+            if town.error then
+                catalog.errors = catalog.errors + 1
+                if catalog.errors <= 4 then report("TOWN_ERROR id=" .. town.id .. " detail=" .. flow.text(town.error)) end
             end
         end
-        session.cursor = last + 1
-        if session.cursor > #session.ids then session.phase = "prepare" end
-    elseif session.phase == "prepare" then prepare(session)
-    elseif session.phase == "sampling" then
-        session.terrainStartTick = session.terrainStartTick or world.tick
-        local last = math.min(#session.samples + 16, session.layout.requested)
-        for index = #session.samples + 1, last do
-            local x, y = flow.position(session.layout, index)
-            flow.add(session, adapter.sample(session.bounds, x, y))
+        catalog.cursor = last + 1
+        if catalog.cursor > #catalog.ids then
+            state.towns, state.catalog = catalog.towns, nil
+            state.status = #state.towns >= 2 and "idle" or "unsupported"
+            state.message = #state.towns >= 2 and "No request submitted. Select two towns and press Plan."
+                or "Fewer than two valid towns. Refresh towns after map changes."
+            report("TOWNS available=" .. #state.towns .. " rejected=" .. catalog.rejected .. " read_errors=" .. catalog.errors)
+            report("STATE status=" .. state.status .. " request=none")
         end
-        if #session.samples == session.layout.requested then session.phase = "planning" end
-    elseif session.phase == "planning" then
-        verifySources(session)
-        session.planStartTick = world.tick
-        local input = flow.input(session, config) -- Fresh plain tables, never a shared scanner state.
-        report("ANCHOR_HEIGHT start=" .. flow.number(input.grid.cells[session.layout.start.sampleId].height)
-            .. " destination=" .. flow.number(input.grid.cells[session.layout.destination.sampleId].height)
-            .. " source=sampled_terrain")
-        local started = now()
-        session.result = planner.plan(input)
-        session.searchSeconds = now() - started
-        if session.searchSeconds < 0 then fail("invalidated", "application_clock_went_backwards") end
-        session.phase = "done"
     end
+    local ended, endedError = adapter.seconds()
+    if not flow.finite(ended) then error(endedError or "api.util.getApplicationTime unavailable", 0) end
+    if ended < began then error("application_clock_went_backwards", 0) end
+    if ended - began > config.workBudgetSeconds then error("town_collection_performance_limit", 0) end
 end
 
-local function runWork(session)
-    local began = now()
-    if session.started == nil then session.started = began end
-    if began < (session.lastSeconds or session.started) then fail("invalidated", "application_clock_went_backwards") end
-    if began - session.started > config.maxAgeSeconds then fail("invalidated", "snapshot_age_limit_exceeded") end
-    local before = adapter.world()
-    if flow.worldChanged(session, before) then fail("invalidated", "world_identity_or_tick_changed") end
-    session.tick = before.tick
-    local phase = session.phase
-    work(session, before)
-    local after = adapter.world()
-    if flow.worldChanged(session, after) then fail("invalidated", "world_identity_or_tick_changed_during_callback") end
-    session.tick = after.tick
-    if phase == "towns" then session.townsEndTick = after.tick end
-    if phase == "sampling" then session.terrainEndTick = after.tick end
-    if phase == "planning" then session.planEndTick = after.tick end
-    local ended = now()
-    session.lastSeconds = ended
-    local duration = ended - began
-    if duration < 0 then fail("invalidated", "application_clock_went_backwards") end
-    session.maxWorkSeconds = math.max(session.maxWorkSeconds or 0, duration)
-    if duration > config.workBudgetSeconds then fail("performance_limit", "synchronous_work_budget_exceeded;resumable_search_or_smaller_workload_required") end
-    if ended - session.started > config.maxAgeSeconds then fail("invalidated", "snapshot_age_limit_exceeded") end
-    if session.phase == "done" then
-        local status = session.result.status
-        if status == "ok" and session.invalidSamples + session.failedSamples + session.townErrors + session.rejectedIds + session.rejectedTowns > 0 then
-            status = "incomplete"
-        end
-        finish(session, status, "see_search_profiles_and_sample_counts")
+local function response(state, accepted, reason)
+    local r = state.request
+    local towns = {}
+    for _, town in ipairs(state.towns) do towns[#towns + 1] = {id = town.id, name = town.name} end
+    return {epoch = state.epoch, world = state.world, tick = state.tick, listVersion = state.listVersion,
+        requestId = state.requestId, accepted = accepted, reason = reason, towns = towns,
+        status = state.status, message = state.message, busy = r ~= nil and not r.finished,
+        canPlan = state.ready == true and state.catalog == nil and #towns >= 2
+            and (state.status ~= "error" or (r ~= nil and r.finished)),
+        candidates = r and r.result and #r.result.candidates or 0,
+        preview = r and preview.valid(r.preview, state) and r.preview or nil}
+end
+
+local function update(state)
+    if not state.checked then
+        local reason = flow.checkConfig(config) or adapter.check()
+        if reason then error(reason, 0) end
+        state.checked = true
+        -- Entity lookup confirms registration only, not GUI-handler delivery.
+        local scriptName = "oz_railway_network_architect" .. "::/live_plan.gs"
+        local found, entity = pcall(function()
+            return api.engine.system.gameScriptSystem.getEntityForGameScript(scriptName)
+        end)
+        report("REGISTRATION_LOOKUP name=" .. scriptName .. " status="
+            .. (found and flow.id(entity) and "resolved" or "unavailable")
+            .. (found and (" entity=" .. flow.text(entity))
+                or (" detail=api.engine.system.gameScriptSystem.getEntityForGameScript: " .. flow.text(entity))))
+        report("UI_SESSION_READY status=waiting request=none communication=trace-v1 handler=guiHandleEvent")
     end
+    state.polls = state.polls + 1
+    local active = state.catalog or (state.request and not state.request.finished)
+    if not active and state.polls ~= 1 and state.polls % 30 ~= 0 then return state end
+    local world
+    state, world = synchronize(state)
+    if not world or not state.ready then return state end
+    if state.status == "waiting" then startCatalog(state) end
+    if state.catalog and state.polls % 4 == 0 then
+        collect(state)
+        state = synchronize(state) -- Do not expose a catalog from an invalidated world.
+    end
+    if state.request and not state.request.finished then
+        request.step(state.request)
+        if not state.request.finished and state.request.progress then state.message = state.request.progress end
+        if state.request.finished then
+            local r = state.request
+            state.status = r.status
+            -- Build once from a finished, validated request, never from a coarse guide
+            -- or unfinished section. Existing status transport carries only this DTO.
+            local previewReason
+            r.preview, previewReason = preview.build(state)
+            debugPrint("[RNA:PREVIEW:4B4] PANEL_SUMMARY request=" .. state.requestId
+                .. " candidates=" .. (r.preview and #r.preview.candidates or 0)
+                .. " reason=" .. (previewReason or "complete_snapshot") .. " map_overlay=false")
+            local messages = {ok = "Completed", incomplete = "Completed with missing data",
+                unreachable = "No route through the sampled region", unsupported = "These anchors cannot be represented adequately",
+                invalidated = "Map data changed; please try again", performance_limit = "Work budget exceeded; review required",
+                resource_limit = "Long-distance planning resource limit reached", search_limit = "Search budget reached", timing_unavailable = "Timing unavailable", error = "Planning failed"}
+            state.message = (messages[r.status] or "Planning failed: " .. r.status)
+                .. ". Candidates: " .. (r.result and #r.result.candidates or 0) .. ". Details in log."
+            if r.status == "unsupported" and r.hierarchy then
+                state.message = "No corridor was calculated within the current bounded sampling or endpoint limits. "
+                    .. "Try another pair; the precise reason is in the log."
+            end
+            if r.status == "unsupported" and r.reason == "pair_exceeds_grid_resolution_or_boundary_margin" then
+                state.message = "The selected towns exceed the current prototype's sampling resolution or map-boundary margin. "
+                    .. "No route was calculated. Try towns closer together and away from the map edge."
+                if r.pair and (math.abs(r.pair.start.x - r.pair.destination.x) > (config.gridLimit - 1) * 128
+                    or math.abs(r.pair.start.y - r.pair.destination.y) > (config.gridLimit - 1) * 128) then
+                    state.message = "The selected towns are too far apart for the current prototype's sampling resolution. "
+                        .. "No route was calculated. Try towns closer together."
+                end
+            end
+        end
+    end
+    return state
 end
 
 function data()
     return {
-        guiUpdate = function(_captureParams, _engineState, guiState)
-            local session = guiState:get() or {}
-            if session.finished then return end
-            local ok, reason = pcall(function()
-                if not session.initialized then
-                    session.initialized, session.polls, session.missingWorld, session.batchWait = true, 0, 0, 0
-                    report("WAIT_WORLD waiting_for_valid_world_and_tick_advance;unpause_to_plan")
-                    local invalidConfig = flow.checkConfig(config)
-                    if invalidConfig then fail("unsupported", invalidConfig) end
-                    local missing = adapter.check()
-                    if missing then fail("error", missing) end
-                end
-                if session.phase then
-                    session.batchWait = session.batchWait + 1
-                    if session.batchWait < 4 then return end
-                    session.batchWait = 0
-                    runWork(session); return
-                end
-                session.polls = session.polls + 1
-                if session.polls > 1 and session.polls % 30 ~= 0 then return end
-                local world = adapter.world()
-                if world == nil then
-                    session.missingWorld = session.missingWorld + 1
-                    if session.missingWorld >= 60 then fail("error", "world_unavailable_after_60_readiness_checks") end
-                    return
-                end
-                session.missingWorld = 0
-                if session.world ~= world.id or session.tick == nil or world.tick < session.tick then
-                    session.world, session.tick = world.id, world.tick; return
-                end
-                if world.tick <= session.tick then return end
-                session.phase = "begin"
-                runWork(session)
-            end)
-            if not ok then
-                session.result = nil -- Never publish stale, failed or over-budget candidates.
-                local status, detail = "error", reason
-                if type(reason) == "table" then status, detail = reason.status, reason.reason end
-                finish(session, status, flow.text(detail))
+        guiUpdate = function(_params, _engineState, guiState)
+            local state = guiState:get()
+            if not state or not state.epoch then state = newState() end
+            local ok, updated = pcall(update, state)
+            if ok then state = updated else
+                if state.request then request.invalidate(state.request, "session_update_failed") end
+                if state.status ~= "error" then report("ERROR detail=" .. flow.text(updated)) end
+                state.status, state.message, state.catalog = "error", flow.text(updated), nil
             end
-            -- Own GUI callback state only. No engine-state or GUI SaveData writes.
-            guiState:set(session)
+            guiState:set(state)
+        end,
+        guiHandleEvent = function(_params, _engineState, guiState, _src, id, name, param)
+            -- Diagnostic envelope only; never a planning/replay token. The UI
+            -- enables tracing for at most eight dispatches per launcher lifetime.
+            local trace = type(param) == "table" and param._rnaTrace or nil
+            local traceId = type(trace) == "table" and type(trace.id) == "string" and trace.id or nil
+            local related = id == eventId or (type(name) == "string" and name:sub(1, #eventId + 1) == eventId .. ".")
+            local traceEnabled = (traceId ~= nil and #traceId <= 64 and trace.enabled == true)
+                or (related and traceId == nil)
+            if traceEnabled then
+                local diagnosticState = guiState:get()
+                if not diagnosticState or not diagnosticState.epoch then diagnosticState = newState() end
+                local count = diagnosticState.communicationTraceCount or 0
+                traceEnabled = count < 8
+                if traceEnabled then
+                    diagnosticState.communicationTraceCount = count + 1
+                    guiState:set(diagnosticState)
+                end
+            end
+            local function traceEvent(message)
+                if traceEnabled then
+                    report("COMM " .. message .. " trace=" .. flow.text(traceId or "unavailable"))
+                end
+            end
+            traceEvent("HANDLER_ENTRY src=" .. flow.text(_src) .. " id=" .. string.format("%q", flow.text(id))
+                .. " name=" .. flow.text(name) .. " param_type=" .. type(param))
+            -- Shipped mission_sim handles this exact lifecycle notification by resetting GUI data.
+            if id == "gameUI" and name == "reactPostInit" then
+                guiState:set(reset(guiState:get() or {}, "reactPostInit")); return
+            end
+            if id ~= eventId then
+                traceEvent("HANDLER_ROUTE accepted=false reason=event_id"); return
+            end
+            if type(name) ~= "string" or name:sub(1, #eventId + 1) ~= eventId .. "." then
+                traceEvent("HANDLER_ROUTE accepted=false reason=event_name_prefix"); return
+            end
+            name = name:sub(#eventId + 2)
+            if name ~= "status" and name ~= "plan" and name ~= "refresh" then
+                traceEvent("HANDLER_ROUTE accepted=false reason=event_action"); return
+            end
+            traceEvent("HANDLER_ROUTE accepted=true action=" .. name)
+            local state = guiState:get()
+            if not state or not state.epoch then state = newState() end
+            local accepted, reason = false, nil
+            local ok, detail = pcall(function()
+                state = synchronize(state)
+                if name == "status" then return end
+                if state.request and not state.request.finished then reason = "busy"; return end
+                if name == "refresh" then
+                    if not state.ready then reason = "world_not_ready"; return end
+                    startCatalog(state); accepted = true; return
+                end
+                if type(param) ~= "table" or param.world ~= state.world or param.epoch ~= state.epoch then
+                    reason = "stale_session"; return
+                end
+                if not flow.id(param.requestId) or param.requestId ~= state.requestId + 1 then reason = "duplicate_or_stale_request"; return end
+                if not state.ready or state.catalog or (state.status == "error" and not state.request) then reason = "not_ready"; return end
+                -- Consume the click token even on validation failure; replay cannot restart work.
+                state.requestId = param.requestId
+                if not flow.id(param.sourceId) or not flow.id(param.destinationId) then reason = "invalid_selected_ids"; return end
+                if param.sourceId == param.destinationId then reason = "same_town"; return end
+                local seen = {}
+                for _, town in ipairs(state.towns) do seen[town.id] = true end
+                if not seen[param.sourceId] or not seen[param.destinationId] then reason = "selection_not_in_town_list"; return end
+                local source, destination = adapter.town(param.sourceId), adapter.town(param.destinationId)
+                for _, town in ipairs({source, destination}) do
+                    if town.error then report("ENDPOINT_ERROR id=" .. town.id .. " detail=" .. flow.text(town.error)) end
+                end
+                local pair, invalid = flow.selected({source, destination},
+                    adapter.bounds(), param.sourceId, param.destinationId)
+                if not pair then reason = invalid; return end
+                local world = adapter.world()
+                if flow.worldChanged(state, world) then state = reset(state, "world_changed_during_request"); reason = "stale_session"; return end
+                state.request = request.start(world, param.sourceId, param.destinationId, param.requestId)
+                state.status, state.message = "planning", "Planning in progress. See log for diagnostics."
+                report("REQUEST_START request=" .. param.requestId .. " source_id=" .. param.sourceId .. " destination_id=" .. param.destinationId)
+                accepted = true
+            end)
+            if not ok then reason = flow.text(detail) end
+            if reason and name ~= "status" then
+                -- Busy/replay rejection must not overwrite an active/completed request.
+                report("REQUEST_REJECTED reason=" .. flow.text(reason))
+            end
+            guiState:set(state)
+            local value = response(state, accepted, reason)
+            value._rnaTraceId = traceId
+            traceEvent("HANDLER_RESPONSE type=table epoch=" .. tostring(value.epoch)
+                .. " status=" .. flow.text(value.status) .. " towns=" .. #value.towns
+                .. " accepted=" .. tostring(accepted) .. " reason=" .. flow.text(reason))
+            return value
         end,
     }
 end

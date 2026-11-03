@@ -3,13 +3,27 @@ local grid = ug_require "oz_railway_network_architect::/planning/corridor_grid.l
 local search = {}
 local offsets = {{-1, -1}, {0, -1}, {1, -1}, {-1, 0}, {1, 0}, {-1, 1}, {0, 1}, {1, 1}}
 
-function search.run(model, weights, budget)
-    local stats = {expansions = 0, peakOpen = 0}
+function search.start(model, weights, budget)
+    return {model = model, weights = weights, budget = budget,
+        stats = {expansions = 0, peakOpen = 0}, heap = {}, positions = {},
+        cost = {}, priority = {}, heuristic = {}, parent = {}, closed = {}}
+end
+
+-- All continuation data is plain Lua; no coroutine/thread/function is retained.
+function search.step(state, limit)
+    assert(type(limit) == "number" and limit >= 1 and limit <= 49152 and limit % 1 == 0, "invalid expansion slice")
+    if state.finished then return state.result end
+    local model, weights, budget, stats = state.model, state.weights, state.budget, state.stats
+    local function done(result)
+        state.finished, state.result = true, result
+        return result
+    end
     if not model.cells[model.start].traversable or not model.cells[model.destination].traversable then
-        return {status = "unreachable", reason = "endpoint_unavailable", stats = stats}
+        return done({status = "unreachable", reason = "endpoint_unavailable", stats = stats})
     end
     local targetC, targetR = grid.indices(model, model.destination)
-    local heap, positions, cost, priority, heuristic, parent, closed = {}, {}, {}, {}, {}, {}, {}
+    local heap, positions, cost, priority, heuristic, parent, closed = state.heap, state.positions,
+        state.cost, state.priority, state.heuristic, state.parent, state.closed
     local function less(a, b)
         if priority[a] ~= priority[b] then return priority[a] < priority[b] end
         if heuristic[a] ~= heuristic[b] then return heuristic[a] < heuristic[b] end
@@ -54,16 +68,18 @@ function search.run(model, weights, budget)
         end
         return id
     end
-    offer(model.start, 0)
+    if not state.initialized then offer(model.start, 0); state.initialized = true end
+    local stop = stats.expansions + limit
     while #heap > 0 do
-        if stats.expansions >= budget then return {status = "search_limit", stats = stats} end
+        if stats.expansions >= budget then return done({status = "search_limit", stats = stats}) end
+        if stats.expansions >= stop then return nil end
         local id = pop()
         closed[id], stats.expansions = true, stats.expansions + 1
         if id == model.destination then
             local reversed, path, cursor = {}, {}, id
             while cursor do reversed[#reversed + 1] = cursor; cursor = parent[cursor] end
             for i = #reversed, 1, -1 do path[#path + 1] = reversed[i] end
-            return {status = "found", path = path, score = cost[id], stats = stats}
+            return done({status = "found", path = path, score = cost[id], stats = stats})
         end
         local column, row = grid.indices(model, id)
         for _, offset in ipairs(offsets) do
@@ -84,7 +100,13 @@ function search.run(model, weights, budget)
             end
         end
     end
-    return {status = "unreachable", reason = "open_set_exhausted", stats = stats}
+    return done({status = "unreachable", reason = "open_set_exhausted", stats = stats})
+end
+
+function search.run(model, weights, budget)
+    local state = search.start(model, weights, budget)
+    repeat search.step(state, 49152) until state.finished
+    return state.result
 end
 
 return search

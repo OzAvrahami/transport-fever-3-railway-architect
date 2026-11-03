@@ -20,7 +20,7 @@ for path in files:
             resource += ".lua"
         assert (package / "content" / resource).is_file(), f"Missing reference: {ref}"
 print(f"PASS Lua 5.4 syntax: {len(files)} files; local resource/import targets exist")
-for path in [root / "AGENTS.md", root / "README.md", *package.rglob("*"), *files]:
+for path in [root / "AGENTS.md", root / "README.md", *(root / "docs").glob("*.md"), *package.rglob("*"), *files]:
     if path.is_file():
         text = path.read_bytes().decode("utf-8", errors="strict")
         assert not text.startswith("\ufeff"), f"BOM: {path}"
@@ -39,7 +39,9 @@ end""")
 references = [manifest["runScript"]["fileName"]]
 for path in (package / "content").glob("*.gs.lua"):
     descriptor = read_descriptor(path.read_text(encoding="utf-8"))
-    references.append(descriptor["guiUpdateScript"]["fileName"])
+    for field in ("updateScript", "guiUpdateScript", "guiHandleEventScript"):
+        if descriptor[field]:
+            references.append(descriptor[field]["fileName"])
 for reference in references:
     resource, callback = reference.split("::/")[1].split("@")
     source = (package / "content" / (resource + ".lua")).read_text(encoding="utf-8")
@@ -58,5 +60,7 @@ ug_require = function(resource)
 end
 ''')
 planning_lua.execute((root / "tests" / "corridor_planner_test.lua").read_text(encoding="utf-8"))
+planning_lua.execute((root / "tests" / "hierarchical_planner_test.lua").read_text(encoding="utf-8"))
+planning_lua.execute((root / "tests" / "preview_test.lua").read_text(encoding="utf-8"))
 planning_lua.globals().CONTENT = (package / "content").as_posix()
 planning_lua.execute((root / "tests" / "live_plan_test.lua").read_text(encoding="utf-8"))

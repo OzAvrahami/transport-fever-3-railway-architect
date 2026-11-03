@@ -2,21 +2,43 @@
 
 ## Current milestone
 
-Phase 4B.4 only: read-only corridor presentation through the existing verified GUI.
-The complete world-space rendering contract was not established; use the expressly
-authorized in-panel summary fallback, clearly labeled as NOT a map overlay.
-Baseline ea318ea on main; preserve all uncommitted Phase 4B.2 and 4B.3 work, layout,
-event subscriptions and transport. Inventories and planning algorithms remain unchanged.
+Phase 5A only: deterministic pure-Lua network topology studies, with synthetic tests.
+No live network execution, UI changes or new native APIs. Preserve all uncommitted
+Phase 4B.2/4B.3/4B.4 work, layout, subscriptions, inventories and corridor algorithms.
+World-space rendering remains unresolved; the existing panel is NOT a map overlay.
 No automatic staging update, construction, speculative overlays, commits, tags,
-pushes or publication. Stop after Phase 4B.4 for review and native verification.
+pushes or publication. Stop after Phase 5A for code review.
 The authoritative planner remains content/planning/ inside the mod.
 
-Future planning must consider road alternatives, demand, distance, existing
-infrastructure and cost. A city or industry does not automatically need rail.
-Those connection decisions and economic calculations are outside Phase 4B.4.
+Topology studies consider supplied demand evidence, distance, geography and transport
+alternatives. A city or industry does not automatically need rail. Economic feasibility
+and actual construction remain unverified; scores are explicit planning preferences.
 
 ## Development conventions
 
+- Network topology is pure data processing under content/planning/network_*.lua.
+  It must not invoke native APIs, A*, terrain sampling, GUI events or file writes.
+  The explicit corridorRequest handoff is a descriptor, never automatic execution.
+- Require provenance (source and observed/assumption/synthetic basis) for optional
+  capacity, demand-support, region, geography, transport and inventory inputs.
+  Missing metrics stay nil/unknown, not zero. Reject unsupported population fields;
+  TF3's shipped Population column uses residential capacity, not pairwise demand.
+- Default topology recommendations require supplied positive demand support or a
+  sufficient capacity proxy at both endpoints. Leave unsupported towns disconnected.
+  All thresholds/weights are configurable planning assumptions, not game standards.
+- Select a degree/budget constrained forest of eligible pairs, then label a mainline
+  path per component and remaining branches. No global optimum, passenger demand,
+  operational rail route, station or buildability claim follows from these labels.
+- Rail hints use proximity to incident nodes and physical components only. Same-
+  component proximity defers duplicate corridor studies for inspection; do not merge
+  that physical graph into proposed operational service or assume station access.
+  Industry presence alone supplies no cargo flow and never triggers a new branch.
+- Bound topology to 128 towns / 8,128 pairs, 4,096 rail nodes / 8,192 segments and
+  512 industries. Validate limits before evaluation. Default selected edge budget is
+  32 and town degree limit 3; neither is a monetary or engineering constraint.
+  Keep deterministic ID tie-breaks, input immutability and an explanation per pair.
+- Preserve the existing pure/scanner/UI regression suites. Network fixtures must be
+  labeled synthetic; future live inputs need fresh, independently verified adapters.
 - The deployable mod is `oz_railway_network_architect/`; repository documentation
   and development tools stay outside it.
 - Keep `modId` as `oz_railway_network_architect`, the display name as

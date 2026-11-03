@@ -1,6 +1,19 @@
 # Railway Network Architect
 
-**Phase 4B.4: in-panel corridor summary (awaiting native verification).**
+**Phase 5A: pure railway network topology core (awaiting code review).**
+
+The new deterministic planner screens normalized town pairs using supplied capacity
+or demand-support evidence, distance, geography and existing-transport assessments.
+It proposes conditional mainline/branch corridor studies, potential interchange hubs,
+physical-rail reuse reviews and explicit reasons for leaving towns disconnected.
+It does not infer passenger demand from town names, industry presence or track adjacency.
+
+There is no live network execution or GUI change. Missing evidence remains unknown;
+default planning defers a pair with neither demand support nor sufficient capacity
+at both endpoints. See the [Phase 5A architecture, contracts, synthetic example and tests](docs/phase_5a_network_topology.md).
+All previous local work is preserved. No staging update, commits or pushes.
+
+**Phase 4B.4 presentation background (awaiting native verification):**
 
 The complete supported world-space route rendering contract could not be established
 from installed sources. This phase implements the authorized fallback: **a read-only
@@ -78,9 +91,9 @@ uv run --no-project --offline --with lupa==2.8 python tests/run_lua_tests.py
 ```
 
 The suite includes 22 original planning tests, 20 railway tests, 20 hierarchical
-planning tests, 6 pure preview tests and 70 live-planning/UI tests (138 total). Static checks cover 37 Lua
-files. Mock tests do not prove native rendering or callback latency. Stop after
-Phase 4B.4 for review and real-game verification.
+planning tests, 6 pure preview tests, 25 topology tests and 70 live-planning/UI tests
+(163 total). Static checks cover 40 Lua files. Mock tests do not prove native rendering
+or callback latency. Stop after Phase 5A for code review.
 
 ## Phase 4A planning core
 
@@ -107,10 +120,10 @@ sites, and railway adjacency does not establish operational routing. The prototy
 owns its local snapshot and reports these limits; it does not validate construction.
 
 Run `uv run --no-project --offline --with lupa==2.8 python tests/run_lua_tests.py`.
-This reuses the existing cached development runtime. The suite covers 138 tests
+This reuses the existing cached development runtime. The suite covers 163 tests
 across core planning, hierarchy, railway, presentation and live/UI behavior, and prints a
 three-corridor synthetic comparison. **Do not copy tests or repository documentation
-into staging. Stop after Phase 4B.4 for review and in-game verification.**
+into staging. Stop after Phase 5A for code review.**
 
 ## Documented API invocation correction
 
@@ -732,7 +745,7 @@ executed during validation.
 The additional 22 planning tests run in a separate Lua VM without TF3 mocks and
 include all required scenarios, analytic geometry checks, 48 reference shortest-path
 comparisons and a maximum-size stress fixture. See the Phase 4A document for the
-contract, actual synthetic outputs and limits. Syntax checks now cover 37 Lua files.
+contract, actual synthetic outputs and limits. Syntax checks now cover 40 Lua files.
 Six pure presentation tests validate summary gates. The 20 hierarchy tests cover
 long routes and incremental work; 70 live-planning/UI
 tests use mocked engine/React facilities and the real recipes, callbacks and core.

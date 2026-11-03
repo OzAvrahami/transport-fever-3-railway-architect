@@ -1,5 +1,5 @@
-local grid = require "planning.corridor_grid"
-local search = require "planning.corridor_search"
+local grid = ug_require "oz_railway_network_architect::/planning/corridor_grid.lua"
+local search = ug_require "oz_railway_network_architect::/planning/corridor_search.lua"
 local planner = {}
 
 local function warnings(model)

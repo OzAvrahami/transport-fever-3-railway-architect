@@ -2,16 +2,16 @@
 
 ## Current milestone
 
-Phase 4A only: a deterministic, pure-Lua corridor planning core using synthetic
-fixtures. Baseline 988b756 on main; all four inventories are accepted in-game
-(Phase 3C: 2,021 segments and 2,014 nodes). Preserve the entire deployable package.
-Planning modules stay in planning/, outside game resources. No live integration,
-staging updates, construction, UI, commits, tags, pushes or publication.
-Stop for code review before Phase 4B.
+Phase 4B.1 only: one bounded, read-only live-map corridor planning attempt per
+loaded GUI session. Baseline 05f7fd4 on main; all four inventories are accepted.
+Preserve their files, identity, metadata and revision. No automatic staging update,
+construction, UI, commits, tags, pushes or publication. Stop before Phase 4B.2.
+The authoritative planner is content/planning/ inside the mod. Only its imports
+change from Phase 4A; do not keep a second implementation outside the package.
 
 Future planning must consider road alternatives, demand, distance, existing
 infrastructure and cost. A city or industry does not automatically need rail.
-Those connection decisions and economic calculations are outside Phase 4A.
+Those connection decisions and economic calculations are outside Phase 4B.1.
 
 ## Development conventions
 
@@ -32,6 +32,19 @@ Those connection decisions and economic calculations are outside Phase 4A.
 - Planning takes explicit plain data; inventory Game Script GUI states are separate.
   Do not infer shared snapshots, station locations from town centers, operational
   routing from physical adjacency, or construction geometry from a 24x24 terrain grid.
+- The live prototype owns its town reads, grid, samples, timestamps and result in
+  its own GUI state. Reuse read functions, never another scanner's session state.
+- Load game modules using verified mod-qualified ug_require paths. Offline tests
+  adapt imports to the same canonical files; never independently edit generated copies.
+- Select the closest valid town pair with entity-ID tie-breaking. Report bounding
+  centers as approximate anchors and every endpoint snap. No hardcoded save IDs.
+- Live sampling is capped at 32x32, with integer coordinates and spacing 32/64/128
+  world units. Validate native coordinates before reads. Reject inadequate resolution
+  or approximation. Report buildings/infrastructure obstacles as unaccounted for.
+- Bound town enumeration to 256, read 8 towns or 16 samples every fourth callback,
+  and limit planning to 3,072 expansions. Measure work using the verified GUI timer;
+  stop on work over 50 ms, missing timing, age over 60 s or verifiable world changes.
+  These are prototype limits, not rail standards or a preemptive latency guarantee.
 - A corridor is a sampled-grid path, never a buildable railway. Scores are planning
   preferences, not game construction costs. Gradient assumptions and weights must
   be explicit/configurable. No invented TF3 gradient or curvature standards.
@@ -47,7 +60,7 @@ Those connection decisions and economic calculations are outside Phase 4A.
   Lua runtime is permitted for tests; add no game dependency or project manifest.
 - Documented TF3 bindings may report Lua type "table". Check presence and use
   documented direct calls inside pcall; never require type(value) == "function".
-- Terrain sampling is capped at 24x24 cell centers. Validate coordinates before
+- The accepted world terrain inventory stays capped at 24x24 cell centers. Validate coordinates before
   height/water queries; clamped out-of-bounds heights are not valid samples.
   Use bounded batches, retain explicit partial/completed status and log summaries
   plus capped error examples, never every sample.

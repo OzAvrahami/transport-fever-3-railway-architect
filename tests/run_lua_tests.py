@@ -9,7 +9,7 @@ root = Path(__file__).resolve().parents[1]
 package = root / "oz_railway_network_architect"
 lua = LuaRuntime(unpack_returned_tuples=True)
 compile_lua = lua.eval("function(source, name) local f, err = load(source, name); assert(f, err) end")
-files = sorted(package.rglob("*.lua")) + sorted((root / "tests").glob("*.lua")) + sorted((root / "planning").glob("*.lua"))
+files = sorted(package.rglob("*.lua")) + sorted((root / "tests").glob("*.lua"))
 for path in files:
     source = path.read_text(encoding="utf-8")
     assert not source.startswith("\ufeff"), f"BOM: {path}"
@@ -49,6 +49,14 @@ lua.globals().ROOT = root.as_posix()
 lua.execute((root / "tests" / "rail_inventory_test.lua").read_text(encoding="utf-8"))
 # Separate runtime: the planner cannot accidentally depend on the rail tests' API mocks.
 planning_lua = LuaRuntime(unpack_returned_tuples=True)
-planning_lua.globals().MODULE_PATH = root.as_posix() + "/?.lua"
-planning_lua.execute("package.path = MODULE_PATH")
+planning_lua.globals().MODULE_PATH = (package / "content").as_posix() + "/?.lua;" + root.as_posix() + "/?.lua"
+planning_lua.execute('''
+package.path = MODULE_PATH
+ug_require = function(resource)
+    local relative = assert(resource:match("^oz_railway_network_architect::/(.+)%.lua$"), resource)
+    return require((relative:gsub("/", ".")))
+end
+''')
 planning_lua.execute((root / "tests" / "corridor_planner_test.lua").read_text(encoding="utf-8"))
+planning_lua.globals().CONTENT = (package / "content").as_posix()
+planning_lua.execute((root / "tests" / "live_plan_test.lua").read_text(encoding="utf-8"))

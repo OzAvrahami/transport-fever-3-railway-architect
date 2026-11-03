@@ -1,12 +1,14 @@
 # Phase 4A: synthetic corridor planning core
 
-Baseline: `988b756` on `main`. This core is outside the deployable mod. It performs
-no TF3 calls, logging, file writes, construction, resource registration or live
-snapshot access. Use standard Lua `require`, with the repository root on
-`package.path`:
+Original Phase 4A baseline: `988b756`; accepted core commit: `05f7fd4`.
+Phase 4B.1 moves the authoritative source to the mod's `content/planning/` and
+changes only dependency imports to the verified resource loader. The algorithm
+still performs no engine reads, logging, file writes or construction. See the
+[live prototype](phase_4b1_live_planning.md) for its separate collection session.
+In TF3 use:
 
 ```lua
-local planner = require "planning.corridor_planner"
+local planner = ug_require "oz_railway_network_architect::/planning/corridor_planner.lua"
 local result = planner.plan(input)
 ```
 
@@ -240,7 +242,7 @@ the three search objectives. The tests print this table's values on every run.
   scanning cells. Missing/invalid input errors identify their path. No arbitrary
   keys, native vectors, metatables, functions or userdata are accepted as cell values.
 
-The planner is synchronous and intended only for fixtures in Phase 4A. Hard work
+The planner is synchronous; Phase 4A validated it on fixtures only. Hard work
 limits are not a GUI latency guarantee. The 128x128 isolated-destination stress
 fixture exhausts 49,134 expansions with peakOpen=348, without violating the cap.
 Future GUI integration must profile and, if necessary, make search resumable before
@@ -265,10 +267,15 @@ whose geometry is separately checked against analytic expectations. Planning tes
 run in a fresh Lua VM without the railway tests' TF3 mocks.
 
 The harness also checks Lua syntax, JSON, UTF-8, package references, identity and
-revision. All accepted deployable files are preserved against baseline 988b756.
-No live-game test or staging update is required for this isolated core.
+revision. Phase 4A preserved accepted deployable files against baseline 988b756.
+Phase 4B.1 uses this same core under smaller limits and requires its own live-game
+verification. The test loader resolves resource imports to the canonical files;
+the original 22 synthetic tests remain unchanged.
 
-## Phase 4B proposal — not implemented
+## Original Phase 4B proposal
+
+Phase 4B.1 implements a small subset with explicit limits. This remains the broader
+design context, not a claim that all integration work is complete.
 
 1. Establish one explicit snapshot owner/coordinator using a verified TF3 lifecycle.
    Do not read another Game Script's GUI callback state as shared storage. Prefer
@@ -298,4 +305,4 @@ No live-game test or staging update is required for this isolated core.
    automatic track attachment deferred. Verify those contracts in separate approved
    phases; a successful corridor search never authorizes world mutations.
 
-Stop after Phase 4A for code review. Phase 4B requires a new implementation task.
+Phase 4A was accepted. The current live prototype stops at Phase 4B.1 for review.

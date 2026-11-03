@@ -1,27 +1,56 @@
 # Railway Network Architect
 
-**Phase 4A: terrain-aware corridor planning core using synthetic data only.**
+**Phase 4B.1: first read-only live-map corridor planning prototype.**
 The accepted city, industry, terrain and railway inventories remain unchanged.
-The new pure-Lua code lives outside the deployable mod; there is no live-game
-integration, UI, construction, simulation change or staging update.
+A separate GUI Game Script selects two real towns, samples a local grid, runs
+the accepted planner and logs ranked candidates. No UI or world changes.
 Identity and revision remain
 `oz_railway_network_architect`, `Railway Network Architect`, **1**.
 
 Phases 2A through 3C are accepted and runtime verified by the user. The railway
-inventory reported **2,021 segments and 2,014 nodes**. The baseline for this work
-is **988b756** on `main`. No version, tags, manifest or metadata changes; no commit,
+inventory reported **2,021 segments and 2,014 nodes**. Phase 4A is accepted with
+22 planning tests. This work starts from **05f7fd4** on `main`; live planning still
+needs real-game verification. No version, manifest or metadata changes; no commit,
 tag, push, publication or staging update is performed.
 
 Future recommendations must consider geography, demand, road alternatives,
 distance, existing infrastructure and costs. Not every city or industry needs
-rail access. Those connection decisions are outside Phase 4A.
+rail access. Those connection decisions are outside this prototype.
+
+## Phase 4B.1 live prototype
+
+See the [source evidence, provenance, exact logs and acceptance criteria](docs/phase_4b1_live_planning.md).
+The new script owns all its collection/session data and never reads another
+inventory's GUI state. It selects the closest valid town pair, ties by entity ID,
+and treats bounding-volume centers only as approximate anchors.
+
+The local grid has at most 32x32 samples, integer coordinates and spacing 32/64/128
+world units. Every endpoint snap is reported and must stay within both 96 units
+and 10% of the pair distance. Native coordinate validity precedes height/water reads;
+unknown samples are preserved. Buildings/infrastructure obstacles are explicitly
+unaccounted for. Default water exclusion can legitimately produce no route.
+
+Town reads (8) and terrain reads (16) run every fourth callback. The single
+synchronous planner call is limited to 3,072 expansions and timed in the GUI state.
+Work over 50 ms, invalid timing or verifiable session/source changes terminates
+the attempt and discards candidates. The timing guard cannot prevent the first
+stall; actual GUI latency and same-process reload remain acceptance requirements.
+
+All 19 new mocked integration tests, 22 original planning tests and 20 original
+railway tests pass. Run the command below; then review before manually updating
+staging with the guarded procedure in this README. No automatic deployment occurs.
+
+```powershell
+uv run --no-project --offline --with lupa==2.8 python tests/run_lua_tests.py
+```
 
 ## Phase 4A planning core
 
 The [planning contract, algorithm, example and Phase 4B proposal](docs/phase_4a_planning.md)
-describe the implementation in detail. Entry point:
-`require("planning.corridor_planner").plan(input)`, with the repository root on
-Lua's module path. No mod descriptor imports this code.
+describe the accepted algorithm in detail. Its single authoritative source now
+lives in `oz_railway_network_architect/content/planning/`. TF3 loads it through
+`ug_require("oz_railway_network_architect::/planning/corridor_planner.lua")`.
+Only imports changed; offline tests use these same files via a resource-loader shim.
 
 - Explicit world-coordinate endpoints on a rectangular sample grid; finite height,
   water, blocked cells, soft obstacles, constraints and configurable weights.
@@ -35,15 +64,14 @@ Lua's module path. No mod descriptor imports this code.
 
 All inventory GUI callback states are separate. The 24x24 terrain snapshot is too
 coarse for construction-ready alignment. Town centers are not verified station
-sites, and railway adjacency does not establish operational routing. Phase 4B
-must establish explicit snapshot ownership, endpoint provenance, finer bounded
-sampling and safe GUI scheduling before live integration.
+sites, and railway adjacency does not establish operational routing. The prototype
+owns its local snapshot and reports these limits; it does not validate construction.
 
 Run `uv run --no-project --offline --with lupa==2.8 python tests/run_lua_tests.py`.
-This reuses the existing cached development runtime. The suite covers 22 planning
-tests plus the 20 accepted railway tests and prints a three-corridor synthetic
-comparison. **Do not copy planning code or fixtures into staging. Stop for code
-review before Phase 4B.**
+This reuses the existing cached development runtime. The suite covers 22 planning,
+20 accepted railway and 19 live integration tests, and prints a three-corridor synthetic
+comparison. **Do not copy tests or repository documentation into staging. Stop
+after Phase 4B.1 for review and in-game verification.**
 
 ## Documented API invocation correction
 
@@ -74,8 +102,8 @@ The optional timer uses the same protected direct-call pattern; a timer exceptio
 leaves duration unavailable and adds an `error` field to the existing `DURATION`
 line. Returned data validation, lifecycle and the terminal guard are unchanged.
 
-The historical Phase 3C staging instructions below are retained for reference.
-Phase 4A has no deployment step; all existing package files remain unchanged.
+The current staging procedure below adds seven files. All accepted inventory,
+manifest, metadata and bootstrap files remain unchanged.
 
 If a readiness read throws, expect `WAIT_WORLD` followed by a diagnostic such as:
 
@@ -96,19 +124,25 @@ railway-architect/
   README.md
   docs/
     phase_4a_planning.md
-  planning/
-    corridor_grid.lua
-    corridor_search.lua
-    corridor_planner.lua
+    phase_4b1_live_planning.md
   tests/
     run_lua_tests.py
     rail_inventory_test.lua
     corridor_fixtures.lua
     corridor_planner_test.lua
+    live_plan_test.lua
   oz_railway_network_architect/
     mod.json
     _metadata/modinfo.json
     content/
+      planning/
+        corridor_grid.lua
+        corridor_search.lua
+        corridor_planner.lua
+      live_plan.gs.lua
+      live_plan.script.lua
+      live_plan_api.lua
+      live_plan_data.lua
       mod.script.lua
       city_inventory.gs.lua
       city_inventory.script.lua
@@ -135,7 +169,7 @@ contains pure normalization and formatting. The industry files follow the same
 separation. Metadata still describes the accepted Phase 2B baseline and is
 deliberately unchanged. `cosmetic=true` and add/remove severity `None` remain
 consistent with read-only diagnostics. Phase 3C enumeration is now runtime verified;
-Phase 4A does not change the package or its behavior.
+Phase 4B.1 preserves these accepted resources and adds only the planning prototype.
 
 ## Railway contracts and source evidence
 
@@ -464,28 +498,12 @@ removed before logging. No population or ongoing monitoring is implemented.
 
 ## Safe update of the installed development copy
 
-**Historical Phase 3C instructions only. Phase 4A has no staging update.**
-
-Close TF3. Only copy package files from:
-
-```text
-D:\code\transport-fever-3\railway-architect\oz_railway_network_architect
-```
-
-into the already installed folder:
-
-```text
-C:\Program Files (x86)\Steam\userdata\175442176\3493540\local\staging_area\oz_railway_network_architect
-```
-
-Keep `mod.json` directly inside that folder. Back up the old copy outside staging
-if desired; do not create another active copy with the same ID. Do not copy README,
-AGENTS or `.gitignore`. Do not modify the original game install or subscribed mods.
-The following command checks identity and copies only the four new railway files
-without recursive deletion or changes to saves. It requires the already installed,
-accepted city, industry and terrain files to match the workspace before copying. Existing
-`_metadata` and `content` directories must remain in place. It does not overwrite those files,
-the manifest or metadata. These instructions have not been executed by the agent.
+Close TF3 completely. The following **manual** PowerShell procedure adds only the
+seven Phase 4B.1 files to the existing development copy. It checks identity,
+revision and hashes of all 19 accepted package files first. It creates only the
+new content/planning directory, copies the descriptor last, and verifies hashes.
+It does not delete files, touch saves or modify the original game installation.
+The agent has not executed this procedure.
 
 ```powershell
 $rnaSource = 'D:\code\transport-fever-3\railway-architect\oz_railway_network_architect'
@@ -497,14 +515,10 @@ $rnaSource = (Resolve-Path -LiteralPath $rnaSource -ErrorAction Stop).Path
 $rnaTarget = (Resolve-Path -LiteralPath $rnaTarget -ErrorAction Stop).Path
 foreach ($rnaRoot in @($rnaSource, $rnaTarget)) {
     $rnaManifest = Get-Content -LiteralPath (Join-Path $rnaRoot 'mod.json') -Raw | ConvertFrom-Json
-    if ($rnaManifest.modId -ne 'oz_railway_network_architect') {
-        throw "Unexpected mod identity in $rnaRoot"
+    if ($rnaManifest.modId -ne 'oz_railway_network_architect' -or $rnaManifest.revision -ne 1) {
+        throw "Unexpected mod identity/revision in $rnaRoot"
     }
 }
-$rnaFiles = @(
-    'content\rail_inventory.gs.lua', 'content\rail_inventory.script.lua',
-    'content\rail_inventory_api.lua', 'content\rail_inventory_data.lua'
-)
 $rnaBaseline = @(
     'mod.json', '_metadata\modinfo.json', 'content\mod.script.lua',
     'content\city_inventory.gs.lua', 'content\city_inventory.script.lua',
@@ -512,20 +526,26 @@ $rnaBaseline = @(
     'content\industry_inventory.gs.lua', 'content\industry_inventory.script.lua',
     'content\industry_inventory_api.lua', 'content\industry_inventory_data.lua',
     'content\terrain_inventory.gs.lua', 'content\terrain_inventory.script.lua',
-    'content\terrain_inventory_api.lua', 'content\terrain_inventory_data.lua'
+    'content\terrain_inventory_api.lua', 'content\terrain_inventory_data.lua',
+    'content\rail_inventory.gs.lua', 'content\rail_inventory.script.lua',
+    'content\rail_inventory_api.lua', 'content\rail_inventory_data.lua'
 )
 foreach ($rnaFile in $rnaBaseline) {
     $rnaSourceHash = (Get-FileHash -LiteralPath (Join-Path $rnaSource $rnaFile) -ErrorAction Stop).Hash
     $rnaTargetHash = (Get-FileHash -LiteralPath (Join-Path $rnaTarget $rnaFile) -ErrorAction Stop).Hash
-    if ($rnaSourceHash -ne $rnaTargetHash) {
-        throw "Baseline mismatch; review before updating: $rnaFile"
-    }
+    if ($rnaSourceHash -ne $rnaTargetHash) { throw "Baseline mismatch; review before updating: $rnaFile" }
 }
+$rnaFiles = @(
+    'content\planning\corridor_grid.lua', 'content\planning\corridor_search.lua',
+    'content\planning\corridor_planner.lua', 'content\live_plan_data.lua',
+    'content\live_plan_api.lua', 'content\live_plan.script.lua', 'content\live_plan.gs.lua'
+)
 foreach ($rnaFile in $rnaFiles) {
     if (-not (Test-Path -LiteralPath (Join-Path $rnaSource $rnaFile) -PathType Leaf)) {
         throw "Missing source file: $rnaFile"
     }
 }
+$null = New-Item -ItemType Directory -Path (Join-Path $rnaTarget 'content\planning') -Force -ErrorAction Stop
 foreach ($rnaFile in $rnaFiles) {
     Copy-Item -LiteralPath (Join-Path $rnaSource $rnaFile) -Destination (Join-Path $rnaTarget $rnaFile) -Force -ErrorAction Stop
     if ((Get-FileHash -LiteralPath (Join-Path $rnaSource $rnaFile)).Hash -ne
@@ -535,12 +555,15 @@ foreach ($rnaFile in $rnaFiles) {
 }
 ```
 
-If copying is interrupted, rerun with TF3 closed before testing. Do not click Mod
-Hub Upload/Update: those publish remotely. On another account/machine, obtain its
-TF3 userdata path rather than reuse this account number. The agent has not updated
-staging or launched TF3.
+Keep mod.json directly inside the existing mod folder. Do not create another active
+copy with the same ID, copy tests/docs, or click Mod Hub Upload/Update. If interrupted,
+rerun with TF3 closed before testing. On another account, first obtain that account's
+TF3 userdata path. No removal of an old staging planning folder is needed: the
+accepted Phase 4A source was outside the mod and was not a staging resource.
 
 ## Manual verification
+
+For the new prototype, follow the [Phase 4B.1 acceptance procedure](docs/phase_4b1_live_planning.md#validation-and-manual-acceptance) and collect `[RNA:PLAN:4B1]` logs. The scenarios below remain regression checks for the accepted inventories.
 
 ### Railway acceptance: two separate maps
 
@@ -569,7 +592,7 @@ staging or launched TF3.
    should receive exactly one new railway scan. Compare summaries excluding duration
    on an unchanged map. Observe GUI responsiveness while scanning.
 6. Retain `[RNA:RAIL:3C]` lines and any surrounding engine errors for review. Do not
-   proceed to planning. Zero segments on a visibly tracked map is a failed test.
+   proceed beyond Phase 4B.1. Zero segments on a visibly tracked map is a failed test.
 
 Expected empty-network output (illustrative, not runtime evidence):
 
@@ -626,11 +649,11 @@ and `SCAN_END status=aborted complete=false`, never a successful zero summary.
    must remain false, not missing. For an unchanged map, repeat after reload and
    compare terrain statistics excluding duration. Do not alter a valued map for tests.
 7. Exit normally and retain the relevant log excerpt before another launch can
-   replace it. Stop at Phase 3C for review; do not proceed to network planning.
+   replace it. Stop at Phase 4B.1 for review; do not proceed to Phase 4B.2.
 
 ```powershell
 $rnaLog = 'C:\Program Files (x86)\Steam\userdata\175442176\3493540\local\crash_dump\stdout.txt'
-Select-String -LiteralPath $rnaLog -SimpleMatch '[RNA:CITY:2B]', '[RNA:IND:3A]', '[RNA:TERRAIN:3B]', '[RNA:RAIL:3C]'
+Select-String -LiteralPath $rnaLog -SimpleMatch '[RNA:CITY:2B]', '[RNA:IND:3A]', '[RNA:TERRAIN:3B]', '[RNA:RAIL:3C]', '[RNA:PLAN:4B1]'
 ```
 
 Illustrative output; IDs, names, coordinates and time will vary:
@@ -716,18 +739,17 @@ graph cases, negative/zero/nonfinite coordinates, missing data, limits, bounded
 diagnostics, API errors, symbolic track filtering, readiness, batching, once-only
 behavior and explicit aborts. Mocks exercise our logic; they do not verify native
 bindings or the engine's GUI-state lifetime. Final review also checks descriptor
-callback exports, unchanged accepted package files versus 988b756, PowerShell
+callback exports, unchanged accepted package files versus 05f7fd4, PowerShell
 example syntax and the absence of world-changing calls. No staging commands are
 executed during validation.
 
 The additional 22 planning tests run in a separate Lua VM without TF3 mocks and
 include all required scenarios, analytic geometry checks, 48 reference shortest-path
 comparisons and a maximum-size stress fixture. See the Phase 4A document for the
-contract, actual synthetic outputs and limits. Syntax checks cover 23 Lua files.
+contract, actual synthetic outputs and limits. Syntax checks now cover 28 Lua files, including the new integration test. The 19 live integration tests use mocked engine reads and the real callback/core.
 
 The user verified all four inventories; railway enumeration reported 2,021 segments
 and 2,014 nodes. Special layout coverage and lifecycle edge cases remain subjects
 for the retained manual scenarios. There is no proven atomic snapshot across GUI
-batches or station-terminal-to-base-edge mapping. Phase 4A supplies no new game
-integration. Nothing was changed in the original game, staging or saves; no commit,
-tag, push or publication was made. Stop after Phase 4A implementation for code review.
+batches or station-terminal-to-base-edge mapping. Phase 4B.1 adds a separate live planning session, which still needs native loading, timing and reload verification. Nothing was changed in the original game, staging or saves; no commit,
+tag, push or publication was made. Stop after Phase 4B.1 for review and real-game verification.

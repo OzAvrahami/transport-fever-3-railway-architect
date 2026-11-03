@@ -1,5 +1,5 @@
 -- Deterministic A* on a validated model. One indexed heap entry per open sample.
-local grid = require "planning.corridor_grid"
+local grid = ug_require "oz_railway_network_architect::/planning/corridor_grid.lua"
 local search = {}
 local offsets = {{-1, -1}, {0, -1}, {1, -1}, {-1, 0}, {1, 0}, {-1, 1}, {0, 1}, {1, 1}}
 

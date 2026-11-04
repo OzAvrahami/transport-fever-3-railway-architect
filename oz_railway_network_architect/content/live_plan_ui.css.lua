@@ -7,7 +7,7 @@ function data()
     add("Window!rna-planner-window", {
         anchorPoint = {0.5, 0.5},
         gravity = {0.5, 0.5},
-        size = {520, 520},
+        size = {520, 360},
         minSize = {520, -1},
         maxSize = {520, "80vh"},
     })

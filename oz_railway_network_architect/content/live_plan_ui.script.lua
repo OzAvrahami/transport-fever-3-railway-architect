@@ -6,6 +6,7 @@ local preview = ug_require "oz_railway_network_architect::/live_plan_preview.lua
 local networkData = ug_require "oz_railway_network_architect::/network_live_data.lua"
 local worklist = ug_require "oz_railway_network_architect::/network_worklist.lua"
 local geometry = ug_require "oz_railway_network_architect::/live_plan_geometry.lua"
+local playerUI = ug_require "oz_railway_network_architect::/player_plan_ui.lua"
 local eventId = "oz_railway_network_architect.plan"
 
 -- Native window content is instantiated by the game's window container, never in
@@ -45,6 +46,15 @@ local PlannerWindow = react.RegisterWrapperRecipe("OzRailwayNetworkArchitectWind
             elseif type(value.busy) ~= "boolean" or type(value.canPlan) ~= "boolean" then problem = "invalid_busy_or_canPlan" end
             if problem then
                 error("api.gui.fireGuiScriptEvent: planner response unavailable; " .. problem, 0)
+            end
+            if value.testTrack ~= nil then
+                local t=value.testTrack
+                local statuses={idle=true,preparing=true,confirm=true,cancelled=true,expired=true,building=true,built=true,failed=true,unverified=true}
+                if type(t)~="table" or not flow.id(t.sequence) or not statuses[t.status]
+                    or type(t.attempted)~="boolean" or type(t.eligible)~="boolean"
+                    or (t.status=="confirm" and not flow.id(t.confirmId)) then
+                    error("api.gui.fireGuiScriptEvent: invalid test-track response",0)
+                end
             end
             local count = 0
             for key in pairs(value.towns) do
@@ -174,6 +184,8 @@ local PlannerWindow = react.RegisterWrapperRecipe("OzRailwayNetworkArchitectWind
         local children = {}
         local state = view:old()
         local choice = selection:old()
+        -- The launcher never enables development. Retain legacy controls for regression fixtures only.
+        if params.development == true then
         local function combo(role, other)
             local items = {builtin.ComboBoxItem {value = "", content = text("Select town...")}}
             for _, town in ipairs(state.towns) do
@@ -436,6 +448,11 @@ local PlannerWindow = react.RegisterWrapperRecipe("OzRailwayNetworkArchitectWind
         if batchView then
             for _, line in ipairs(batchView.lines) do children[#children + 1] = text(line) end
         else children[#children + 1] = text("No batch request submitted in this view.") end
+        else
+            children=playerUI.children({text=text,state=state,selection=selection,selected=selected,
+                current=current,isLive=isLive,sending=sending,transportFailed=transportFailed,
+                errorState=errorState,form=params.form,confirmed=previewConfirmed,send=send})
+        end
         return builtin.Window {
             meta = {class = "rna-planner-window"},
             id = "oz_railway_network_architect.plan.window",
@@ -503,7 +520,7 @@ local RailwayNetworkArchitect = react.RegisterPluginRecipe(area.MainModButtonAre
             close(generation:get(), false)
         end)
         local launcher = builtin.Button {
-            meta = {tooltip = failure:old() ~= "" and failure:old() or "Open or close the corridor planning window"},
+            meta = {tooltip = failure:old() ~= "" and "Unable to open Railway Network Architect. See the game log." or "Open or close the railway planning window"},
             content = builtin.TextView {text = failure:old() ~= "" and "Railway Network Architect (UI error)"
                 or (opened:old() and "Close Railway Network Architect" or "Railway Network Architect")},
             onClick = function()

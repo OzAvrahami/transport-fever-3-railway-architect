@@ -30,6 +30,7 @@ print("PASS UTF-8 without BOM and JSON syntax")
 manifest = json.loads((package / "mod.json").read_text(encoding="utf-8"))
 metadata = json.loads((package / "_metadata/modinfo.json").read_text(encoding="utf-8"))
 assert manifest["modId"] == "oz_railway_network_architect" and manifest["revision"] == 1
+assert manifest["cosmetic"] is False, "Confirmed construction must not be marked cosmetic"
 assert metadata["name"] == "Railway Network Architect"
 read_descriptor = lua.eval("""function(source)
     local env = {}

@@ -1,5 +1,35 @@
 # Railway Network Architect
 
+**Current: Visual Railway MVP — implementation ready for owner review; native placement unverified.**
+
+The player window now shows Source town, Destination town, **Plan Railway**, a simple
+status and **Build Test Track**. Planning still uses the existing terrain-aware planner
+and does not change the map. Network, worklist, batch and geometry implementations are
+preserved, with their regression tests; their developer controls are hidden from the
+production player window.
+
+After a route is found, pan to clear, flat land and click Build Test Track. This checks
+the centre of the camera view and asks you to confirm that the loaded save is a
+**disposable copy you made**. Confirmation permits one native build attempt: an isolated
+80-metre ordinary track segment, independent of the planned corridor. There are no
+automatic retries or existing-infrastructure removals. The command can charge the
+company and align the ground. Wait for its result before loading another map.
+
+**353 automated tests pass; 56 Lua files pass syntax checks.** Mocked success does not
+establish TF3 acceptance. The implementation requires a successful native callback plus
+read-back of the new track and both nodes before displaying “Track built successfully”.
+Mod identity/revision remain unchanged; `cosmetic` is now **false**.
+
+See [Visual Railway MVP: source evidence, safeguards, changed files and exact single-session
+native procedure](docs/visual_railway_mvp.md). No staging, game save, commit or push was
+performed. Stop for review, then one owner-run test on a disposable save copy.
+
+## Historical development reports
+
+The sections below describe earlier milestones and their former UI. Their read-only
+claims and partial staging instructions are historical, not instructions for this MVP.
+Use the current report above for deployment scope and acceptance.
+
 **Native acceptance fix: configurable network analysis modes (awaiting review/retest).**
 
 Choose **Standard — capacity threshold 200** (default) or **Exploratory — capacity

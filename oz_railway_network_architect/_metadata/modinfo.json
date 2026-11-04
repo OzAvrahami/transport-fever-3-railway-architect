@@ -1,7 +1,7 @@
 {
   "name": "Railway Network Architect",
-  "summary": "Phase 2B: read-only town inventory logged once per loaded game session.",
-  "description": "Logs town IDs, names and world coordinates after observing a live simulation tick. No UI, construction, terrain or economy changes. Unpause briefly to allow scanning. Includes the accepted Phase 2A resource-loading diagnostic.",
+  "summary": "Plan railway corridors and explicitly test one real track segment on a disposable save copy.",
+  "description": "Plan Railway only studies terrain. Build Test Track is a separate confirmed experiment that changes the map and may adjust terrain and charge the company. Use only a disposable save copy. No automatic construction, stations, bulldozing or full-route building. Development diagnostics are logged.",
   "authors": [
     {
       "name": "oz",

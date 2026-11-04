@@ -2,24 +2,39 @@
 
 ## Current milestone
 
-Authorized native-acceptance fix only: selectable Standard/Exploratory network analysis.
-Phase 6D is complete; this is not a new milestone. Keep the pure topology defaults
-and algorithm unchanged. Apply only a live request-local minCapacity of 200/100,
-strictly validate mode, and record the accepted mode independently of UI selection.
-Selecting a mode never analyzes or edits a worklist. Preserve all snapshot/freshness,
-event and construction prohibitions below. Stop for owner review and targeted retest;
-the owner performs any Git commit/push and staging installation.
+Visual Railway MVP: a compact player interface and ONE explicitly confirmed native
+track experiment. This owner authorization supersedes earlier milestone construction
+prohibitions ONLY for content/track_test.lua. Do not execute construction during
+development. Stop for review; the owner installs and tests a disposable save copy.
+No staging deployment, commits, tags, pushes, automatic retries or corridor construction.
 
-Phase 6D only: explicit read-only geometry inspection and consolidated native acceptance readiness.
-No native proposal creation/evaluation or construction command execution. Preserve the original
-topology result and individual handoff, accepted local work, window styling, subscriptions, inventories
-and corridor algorithms. No automatic network analysis or all-pairs terrain A*.
-World-space rendering remains unresolved; the panel is NOT a map overlay.
-No staging deployment, construction, speculative APIs, commits, tags or pushes.
-FINAL DEVELOPMENT STOP after Phase 6D for owner review. Do not begin Phase 6E or
-another feature milestone. Next is one consolidated native acceptance test after owner
-approval of installation; no automatic staging. Newer live features still await acceptance.
-The authoritative planner remains content/planning/ inside the mod.
+- Preserve the launcher, centered window, five subscriptions and existing GUI owner.
+  Player controls are Source town, Destination town, Plan Railway, simple status and
+  Build Test Track. Keep technical details in logs. Legacy analytics controls remain
+  only behind the development recipe parameter for regression fixtures, never enabled
+  by the production launcher. Preserve their algorithms and regression tests.
+- Plan Railway is read-only. Build Test Track first checks the camera-centred site,
+  then requires the explicit disposable-copy confirmation. Only the confirmed action
+  may create and send one native command. Never infer that a save is disposable.
+- Use the shipped native SimpleProposal/NodeAndEntity/SegmentAndEntity pattern and
+  verified base-game simple track resource. One 80 m straight NORMAL track, two new
+  negative-ID nodes, no removal lists, no connections or stations, ignoreErrors=false.
+  Revalidate resource, terrain, occupancy and world before dispatch. Never force errors.
+- Keep sequence/session/corridor checks, a 30-second confirmation deadline and one
+  accepted attempt per loaded session. No commands on load, polling, selection,
+  Plan, network analysis or geometry inspection. No silent relocation or retry.
+- Native GUI commands execute later. Submitted commands have no implemented cancellation
+  or rollback: reject stale callbacks, never retry an ambiguous result, and instruct the
+  owner to wait for the terminal callback before reloading. A success callback alone
+  is insufficient: verify the returned TRACK edge and both nodes through engine reads.
+- Preserve all planning, network, geometry and inventory modules. The existing curve
+  fitter may check this straight test geometry; symbolic offline descriptors are not
+  native proposals. Historical limits below still apply to their respective modules.
+- Native acceptance is pending. Do not claim visible track placement from mocks.
+  See docs/visual_railway_mvp.md for exact contracts, limits and the one-session test.
+
+The authoritative planner remains content/planning/ inside the mod. Standard/Exploratory
+network preferences and all worklist/batch/freshness safeguards remain unchanged internally.
 
 Topology studies consider supplied demand evidence, distance, geography and transport
 alternatives. A city or industry does not automatically need rail. Economic feasibility
@@ -313,13 +328,16 @@ and actual construction remain unverified; scores are explicit planning preferen
 ## Safety and scope
 
 - Treat installed game files, shipped examples and API definitions as read-only.
-- Do not invoke world-changing commands or change simulation configuration.
+- During development, do not execute world-changing commands or change simulation
+  configuration. The sole implemented runtime exception is the explicit confirmed
+  test-track path described above; no other module may send construction commands.
 - Do not persist mod state or modify user saves in this milestone.
 - Do not install or overwrite a local mod copy without a user request to do so.
   Document installation steps for the user instead.
 - Do not publish, upload, commit or push without explicit user authorization.
-- Reassess `cosmetic`, `severityAdd` and `severityRemove` when behavior changes;
-  the current values apply only to diagnostics and read-only inventory.
+- `cosmetic=false` is required now. Add/remove severity stays None: loading adds no
+  world changes, and the isolated experiment uses only base-game resources, not custom
+  assets needed after removal. Native save/remove compatibility still needs testing.
 - Keep changes small and report verified behavior separately from assumptions.
 
 <!-- OCTOCODE-GLOBAL-START -->

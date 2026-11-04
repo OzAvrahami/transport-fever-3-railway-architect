@@ -4,7 +4,7 @@
   "severityAdd": "None",
   "severityRemove": "None",
   "visible": true,
-  "cosmetic": true,
+  "cosmetic": false,
   "runScript": {
     "fileName": "oz_railway_network_architect::/mod.script@runFn"
   }

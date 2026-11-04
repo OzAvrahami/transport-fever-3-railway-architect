@@ -168,7 +168,7 @@ local function newSession(overrides, deliveryGate)
             if predicate(gui:get()) then return end
             step()
         end
-        error("session did not reach expected state")
+        error("session did not reach expected state: " .. table.concat(logs, "\n", math.max(1,#logs-20)))
     end
     local function event(name, param)
         return callbacks.guiHandleEvent(nil, nil, gui, "test", "oz_railway_network_architect.plan",
@@ -2928,6 +2928,7 @@ local function stationFixture()
     local f={objects={},townBuildings={}}
     local types=api.type.ComponentType
     types.TOWN_BUILDING="townBuilding";types.BASE_EDGE="edge";types.STATION="station"
+    types.CONSTRUCTION="construction";types.MODEL_INSTANCE_LIST="models"
     api.type["enum"]={RoadType={STREET="street",TRACK="track"},TransportMode={TRAIN="train",ELECTRIC_TRAIN="electricTrain"}}
     api.type.Vec3f={new=function(x,y,z) return {x=x,y=y,z=z} end}
     api.type.Box3={new=function(a,b) return {min=a,max=b} end}
@@ -3315,7 +3316,7 @@ test('stations: physical occupancy and absent road evidence leave sites unresolv
     for _,mode in ipairs({'blocked','no road'}) do
         local gui,step,untilState,event,f=stationSession()
         if mode=='blocked' then f.station.add(5000,{-1000,-900,1000,900},{})
-        else f.station.objects[1002]=nil end
+        else f.station.objects[1002]=nil;f.station.objects[2002]=nil end
         assert(stationSubmit(gui,event).accepted);untilState(completed)
         equal(gui:get().request.status,'unsupported');equal(#f.adds,0);equal(f.commands,0)
     end
@@ -3433,5 +3434,94 @@ test('stations: failure while drawing a station polygon clears the already submi
     untilState(completed);step(200)
     equal(gui:get().routeOverlay.status,'error');assert(noZones(f));equal(f.commands,0)
     assert(hasLog('station marker renderer failure'))
+end)
+test('occupancy acceptance: native component classification is evidenced and construction takes precedence over tree models',function()
+    local gui,step,untilState,event,f=stationSession();local native=require('station_site_api')
+    local box={minX=-4,maxX=4,minY=-4,maxY=4}
+    local function classify(parts)
+        f.station.add(8000,{-4,-4,4,4},parts);return native.object({id=8000,box=box},worldId)
+    end
+    api.res={modelRep={get=function(id) return {metadata=id==1 and {tree={}} or {}} end}}
+    equal(classify({townBuilding={town=10}}).kind,'building')
+    equal(classify({construction={}}).kind,'construction');equal(classify({}).kind,'unknown')
+    local model={fatInstances={{modelId=1}},thinInstances={}}
+    local v=classify({models=model});equal(v.kind,'vegetation');assert(v.source:find('model.metadata.tree',1,true))
+    equal(classify({models=model,construction={}}).kind,'construction')
+    equal(classify({models={fatInstances={},thinInstances={{modelId=1}}}}).kind,'vegetation')
+    equal(classify({models={fatInstances={{modelId=1},{modelId=2}},thinInstances={}}}).kind,'unknown')
+end)
+test('occupancy acceptance: missing failed mixed or oversized model evidence remains unknown without filename guessing',function()
+    local gui,step,untilState,event,f=stationSession();local native=require('station_site_api')
+    local m={fatInstances={{modelId=1}},thinInstances={}};f.station.add(8000,{-4,-4,4,4},{models=m})
+    local raw={id=8000,box={minX=-4,maxX=4,minY=-4,maxY=4}}
+    api.res={modelRep={get=function() error('missing model fixture') end}}
+    local o=native.object(raw,worldId);equal(o.kind,'unknown');assert(o.classificationIssue:find('api.res.modelRep.get',1,true))
+    api.res.modelRep.get=function() return {metadata={tree={},rock={}}} end
+    equal(native.object(raw,worldId).kind,'unknown')
+    api.res.modelRep.get=function() return {metadata={tree={}}} end
+    for i=1,9 do m.fatInstances[i]={modelId=1} end
+    o=native.object(raw,worldId);equal(o.kind,'unknown');equal(o.classificationIssue,'model_count_unknown_or_above_8')
+end)
+test('occupancy acceptance: final revalidation uses the same body and approach policy including provisional trees',function()
+    local gui,step,untilState,event,f=stationSession();local native=require('station_site_api');local p=require('planning.station_occupancy')
+    local c={x=0,y=0,dx=1,dy=0,length=160,width=48,clearance={minX=-256,maxX=256,minY=-32,maxY=32}}
+    api.res={modelRep={get=function() return {metadata={tree={}}} end}}
+    local function check(x,parts,expected)
+        f.station.add(8000,{x-2,-2,x+2,2},parts)
+        local o=native.object({id=8000,box={minX=x-2,maxX=x+2,minY=-2,maxY=2}},worldId)
+        local initial,reason=p.inspect(c,{o});local final,finalReason,r=native.clear(c,worldId)
+        equal(initial,expected);equal(final,initial);equal(finalReason,reason);return r
+    end
+    check(-200,{townBuilding={town=10}},true)
+    check(0,{townBuilding={town=10}},false)
+    check(110,{},false);check(200,{},true)
+    local r=check(110,{models={fatInstances={{modelId=1}},thinInstances={}}},true);equal(r.vegetationClearance,1)
+end)
+test('occupancy acceptance: verified vegetation can produce provisional sites and routes without any world mutation',function()
+    local gui,step,untilState,event,f=stationSession()
+    api.res={modelRep={get=function() return {metadata={tree={}}} end}}
+    f.station.add(8000,{-1800,-900,1800,900},{models={fatInstances={},thinInstances={{modelId=1}}}})
+    assert(stationSubmit(gui,event).accepted);untilState(completed);equal(gui:get().request.status,'ok');untilState(routeShown)
+    local c=gui:get().request.result.candidates[1]
+    equal(c.stationSites.source.evidence.clearanceStatus,'provisional_vegetation_clearance')
+    equal(c.stationSites.source.evidence.finalVegetationClearance,1);equal(c.vegetationClearanceUnverified,true)
+    equal(c.constructionStatus,'unverified');equal(f.commands,0)
+    assert(hasLog('class=vegetation'));assert(hasLog('source=BOUNDING_VOLUME+MODEL_INSTANCE_LIST+model.metadata.tree'))
+    assert(hasLog('REVALIDATION town='));assert(hasLog('CORRIDOR_OCCUPANCY'))
+    equal(c.waypoints[1].x,c.stationSites.source.approach.x)
+end)
+test('occupancy acceptance: classified hard occupancy diagnostics are bounded and never silently treat trees plus unknown models as clear',function()
+    local gui,step,untilState,event,f=stationSession()
+    api.res={modelRep={get=function(id) return {metadata=id==1 and {tree={}} or {}} end}}
+    for i=1,12 do
+        f.station.add(8000+i,{-1800,-900,1800,900},{models={fatInstances={{modelId=1},{modelId=2}},thinInstances={}}})
+    end
+    assert(stationSubmit(gui,event).accepted);untilState(completed);equal(gui:get().request.status,'unsupported')
+    equal(heightReads,0);equal(#f.adds,0);assert(logCount('OBSTRUCTION_SAMPLE')<=8)
+    assert(hasLog('OCCUPANCY town=10 generated='));assert(hasLog('OCCUPANCY_CLASS town=10 class=unknown'))
+    assert(hasLog('source=BOUNDING_VOLUME+MODEL_INSTANCE_LIST'));equal(f.commands,0)
+end)
+test('occupancy acceptance: between-sample hard conflicts reject a candidate before any route is published',function()
+    local gui,step,untilState,event,f=stationSession();assert(stationSubmit(gui,event).accepted)
+    untilState(function(s) return s.request and s.request.phase=='corridor_check' end)
+    local r=gui:get().request;local w=r.child.result.candidates[1].waypoints
+    local a,b=w[1],w[2];local x,y=(a.x+b.x)/2,(a.y+b.y)/2
+    -- Fault fixture adds a known tiny building exactly between already sampled waypoints.
+    r.objects[#r.objects+1]={id=9900,kind='building',source='TOWN_BUILDING',box={minX=x-1,maxX=x+1,minY=y-1,maxY=y+1}}
+    step(2);assert(hasLog('CORRIDOR_CONFLICT candidate='));assert(hasLog('hard_building entity=9900'))
+    equal(#f.adds,0);equal(f.commands,0)
+end)
+test('occupancy acceptance: final revalidation is incremental and cancelled safely on a world change',function()
+    local gui,step,untilState,event,f=stationSession();local native=require('station_site_api')
+    api.res={modelRep={get=function() return {metadata={tree={}}} end}}
+    for i=1,40 do f.station.add(8000+i,{-1,-1,1,1},{models={fatInstances={{modelId=1}},thinInstances={}}}) end
+    local c={x=0,y=0,dx=1,dy=0,length=160,width=48,clearance={minX=-256,maxX=256,minY=-32,maxY=32}}
+    local job=native.startClear(c,worldId);native.stepClear(job);equal(job.cursor,17);assert(not job.finished)
+    native.stepClear(job);equal(job.cursor,33);assert(not job.finished)
+    native.stepClear(job);equal(job.clear,true);equal(job.report.vegetationClearance,40);equal(job.raw,nil)
+    assert(stationSubmit(gui,event).accepted)
+    untilState(function(s) return s.request and s.request.revalidation~=nil end)
+    local old=gui:get().request;worldId=100;step(40)
+    equal(old.revalidation,nil);equal(old.status,'invalidated');equal(gui:get().request,nil);equal(#f.adds,0)
 end)
 print('PASS '..passed..' live planning/UI tests (mocked engine and React, not TF3 runtime verification)')

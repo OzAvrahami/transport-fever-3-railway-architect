@@ -2,6 +2,10 @@
 
 ## Current milestone
 
+Targeted station-site occupancy acceptance correction on b14ddce. The native test
+rejected 46 source-town candidates before terrain reads; their entity classes were
+not recorded. Do not claim the retest succeeds. See docs/station_site_occupancy_acceptance_fix.md.
+
 Station-Aware Railway Planning. The owner has verified the cyan route in native TF3
 Freeplay. New station reservations and approach-to-approach planning still require one
 Midhurst?Morley native acceptance test after review. No construction, terrain changes,
@@ -15,13 +19,18 @@ staging deployment, commits, tags, pushes, identity or revision changes.
   owns pure site/pair scoring. station_plan_request.lua owns the incremental session,
   using the existing live_plan_request and authoritative A*/hierarchy sequentially.
 - Derive occupied urban extent from actual TOWN_BUILDING volumes, not the town volume.
-  Treat all local non-town/world AABBs as occupied. Read-only octree query caps must
-  fail explicitly on overflow. Never turn unavailable volumes/terrain into vacant land.
+  Use planning/station_occupancy.lua consistently for initial/final screening and masks.
+  Body: 160x48 plus 4 m per side; facing approach: u=76..132, half-width 16.
+  The former 512x64 envelope is inspection evidence, not a mandatory clear footprint.
+  Buildings, constructions, roads, tracks and unknowns block the required regions.
+  Only positively verified tree metadata on every model instance permits provisional
+  vegetation clearance; mixed/missing evidence stays unknown. Never remove vegetation.
+  Read-only query caps fail explicitly. Never turn unknown terrain into vacant land.
 - Passenger rail station hints require a terminal with TRAIN/ELECTRIC_TRAIN plus a
   passenger load/unload flag. Road endpoint distance is not walking catchment. Physical
   track proximity is not operational connectivity or verified attachment/reuse.
 - 160 m length follows four installed 40 m platform sections; 48 m width and 512x64 m
-  approach clearance are explicit approximate reservations, not native station geometry.
+  inspection region are explicit approximations, not native station geometry.
   Cardinal orientations, 128 m approach offsets, 3% sampled grade and other thresholds
   are prototype assumptions. Preserve evidence and unknowns in logs.
 - Cap sites at 48/town, terrain checks at 51/site and 16 reads/callback, shortlist at
@@ -31,6 +40,12 @@ staging deployment, commits, tags, pushes, identity or revision changes.
 - Separate selected town IDs/observations from explicit station approach XYZ. Endpoints
   must match grid samples exactly; reject snaps instead of silently changing the site.
   Revalidate towns/world/bounds and reservation occupancy before publishing.
+- Keep existing scores/constraints; prefer known clear straight exits in site/pair
+  ordering without treating the inspection neighborhood as another hard footprint.
+  Route masks use hard AABBs plus 12 m; verify complete segments independently before
+  publication so between-sample buildings cannot be crossed. Check 16 segments/callback.
+  Final occupancy classification also processes 16 records/callback. Keep vegetation
+  clearance, unknown walking access, source classes and bounded conflict examples in logs.
 - Retain only complete routes with correct outward/inward approach direction and no
   crossing of either reserved station body. No fabricated alternatives or smoothing.
   C1 Hermite fitting does not establish safe approaches, curvature or construction.

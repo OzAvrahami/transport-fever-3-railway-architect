@@ -35,7 +35,7 @@ test("road endpoint proximity is evidence, walking access stays unknown",functio
 end)
 test("known occupancy and map boundaries reject the complete approach reservation",function()
     local c,a=fixture();a.objects[#a.objects+1]={kind="occupied",box=copy(c.clearance)}
-    eq(select(2,sites.screen(c,a,bounds)),"occupied_reservation_or_approach")
+    eq(select(2,sites.screen(c,a,bounds)),"station_body_unknown")
     c,a=fixture();eq(select(2,sites.screen(c,a,{minX=-10,maxX=10,minY=-10,maxY=10})),"boundary")
 end)
 test("remote flat empty plots do not substitute for access to the occupied town",function()
@@ -99,5 +99,79 @@ test("a detour that reenters a station body is rejected even with outward endpoi
     local route={waypoints={copy(c.approach),{x=256,y=256,z=-2},{x=-128,y=256,z=-2},
         {x=-128,y=600,z=-2},{x=1792,y=600,z=-2},{x=1792,y=256,z=-2},copy(d.approach)}}
     assert(not sites.approaches(route,{source=c,destination=d}))
+end)
+local policy=ug_require "oz_railway_network_architect::/planning/station_occupancy.lua"
+local function object(kind,x,y,half)
+    half=half or 2
+    return {id=500,kind=kind,source="synthetic_"..kind,box={minX=x-half,maxX=x+half,minY=y-half,maxY=y+half}}
+end
+test("occupancy: body and facing approach are separate from broad inspection",function()
+    local c=fixture();local r=policy.regions(c)
+    eq(r.body.maxX-r.body.minX,168);eq(r.body.maxY-r.body.minY,56)
+    eq(r.approach.minX,76);eq(r.approach.maxX,132);eq(r.approach.maxY-r.approach.minY,32)
+    eq(r.neighborhood.maxX-r.neighborhood.minX,512)
+    c.dx=0;c.dy=-1;r=policy.regions(c);eq(r.approach.minY,c.y-132);eq(r.approach.maxX-r.approach.minX,32)
+end)
+test("occupancy: buildings constructions tracks and unknowns in body remain hard blockers",function()
+    local c=fixture()
+    for _,kind in ipairs({'building','construction','track','unknown'}) do
+        local ok,reason,r=policy.inspect(c,{object(kind,c.x,c.y)})
+        eq(ok,false);eq(reason,'station_body_'..kind);eq(r.bodyConflicts,1);eq(r.blockedKinds[kind],true)
+    end
+end)
+test("occupancy: rear and remote buildings in old envelope do not become mandatory footprint conflicts",function()
+    local c=fixture();local o=object('building',c.x-200,c.y)
+    local ok,_,r=policy.inspect(c,{o});eq(ok,true);eq(r.neighborhood.building,1);eq(r.bodyConflicts,0);eq(r.approachConflicts,0)
+    o=object('unknown',c.x+200,c.y);ok,_,r=policy.inspect(c,{o});eq(ok,true);eq(r.neighborhood.unknown,1)
+end)
+test("occupancy: nearby road is access evidence but crossing a station or approach blocks",function()
+    local c,a=fixture();local road=object('street',0,c.y+31,2);road.a={x=-20,y=c.y+31};road.b={x=20,y=c.y+31}
+    a.objects[#a.objects+1]=road;assert(sites.screen(c,a,bounds));eq(c.evidence.walkingAccess,'unknown')
+    road.box=object('street',0,c.y).box;eq(select(2,sites.screen(c,a,bounds)),'station_body_street')
+    road.box=object('street',110,c.y).box;eq(select(2,sites.screen(c,a,bounds)),'approach_unresolved_street')
+end)
+test("occupancy: verified vegetation is provisional clearance, unknown approach remains unresolved",function()
+    local c,a=fixture();a.objects[#a.objects+1]=object('vegetation',110,c.y)
+    assert(sites.screen(c,a,bounds));eq(c.evidence.vegetationClearance,1);eq(c.evidence.clearanceStatus,'provisional_vegetation_clearance')
+    a.objects[#a.objects].kind='unknown';eq(select(2,sites.screen(c,a,bounds)),'approach_unresolved_unknown')
+end)
+test("occupancy: empty and heavily occupied regions have exact bounded diagnostics",function()
+    local c=fixture();local ok,_,r=policy.inspect(c,{});eq(ok,true);eq(#r.examples,0)
+    local objects={};for i=1,100 do objects[i]=object('building',0,c.y);objects[i].id=i end
+    ok,_,r=policy.inspect(c,objects);eq(ok,false);eq(r.bodyConflicts,100);eq(#r.examples,3)
+end)
+test("occupancy: masks preserve hard obstacles and provisional vegetation without blanket 80 m exclusion",function()
+    local o=object('building',0,0)
+    assert(policy.blocksSample(o,0,0));assert(not policy.blocksSample(o,40,0))
+    o.kind='vegetation';assert(not policy.blocksSample(o,0,0));o.kind='unknown';assert(policy.blocksSample(o,0,0))
+end)
+test("occupancy: exact segment guard rejects jumping over small buildings roads or unknowns",function()
+    local a,b={x=-64,y=0},{x=64,y=0}
+    for _,kind in ipairs({'building','construction','street','track','unknown'}) do
+        local o=object(kind,0,0);assert(not policy.blocksSample(o,a.x,a.y));assert(not policy.blocksSample(o,b.x,b.y))
+        eq(policy.segment(a,b,{o}),o)
+    end
+    local hit,veg=policy.segment(a,b,{object('vegetation',0,0)});eq(hit,nil);eq(veg,true)
+    eq(policy.segment({x=-64,y=40},{x=64,y=40},{object('building',0,0)}),nil)
+end)
+test("occupancy: exact guard handles diagonal corner touches negative offsets and reversed travel",function()
+    local o=object('building',-100,200,4)
+    assert(policy.segment({x=-132,y=168},{x=-68,y=232},{o}))
+    assert(policy.segment({x=-68,y=232},{x=-132,y=168},{o}))
+    eq(policy.segment({x=-132,y=250},{x=-68,y=250},{o}),nil)
+end)
+test("occupancy: forward exit evidence ranks sites without reclassifying the neighborhood as a footprint",function()
+    local c,a=fixture();a.objects[#a.objects+1]=object('building',200,c.y)
+    assert(sites.screen(c,a,bounds));assert(sites.evaluate(c,samples()));eq(c.evidence.approachExitBlocked,true)
+    local alternative=copy(c);alternative.id='clear';alternative.x=512;alternative.siteScore=c.siteScore+1
+    alternative.evidence.approachExitBlocked=false
+    local list=sites.shortlist({c,alternative});eq(list[1].id,'clear');eq(#list,2)
+end)
+test("occupancy: search approach mask matches accepted direction rule without blocking the exact anchor",function()
+    local a,d={x=-128,y=256},{dx=1,dy=0}
+    eq(policy.blocksApproach(a,d,-128,256,64),false)
+    eq(policy.blocksApproach(a,d,-64,256,64),false);eq(policy.blocksApproach(a,d,-64,320,64),false)
+    eq(policy.blocksApproach(a,d,-128,320,64),true);eq(policy.blocksApproach(a,d,-192,256,64),true)
+    eq(policy.blocksApproach(a,d,-256,256,64),false)
 end)
 print("PASS "..passed.." station site tests (synthetic, not native acceptance)")

@@ -1,6 +1,13 @@
 # Railway Network Architect
 
-**Current: Station-aware passenger railway planning, ready for code review.**
+**Current: Targeted station-site occupancy acceptance correction, ready for review.**
+
+The Midhurst–Morley native test rejected 46 station candidates before terrain sampling.
+Screening now distinguishes the station body and facing approach from the broader
+inspection area, and records verified tree clearance separately from hard obstacles.
+Initial screening, final revalidation and route checks share the same policy. Native
+retest success is still pending; no tracks, stations or vegetation changes are made.
+See the [occupancy correction report and focused retest](docs/station_site_occupancy_acceptance_fix.md).
 
 The owner has verified the cyan route overlay in native TF3 Freeplay. The new station
 workflow is implemented and automated-tested; its native Midhurst?Morley test is pending.
@@ -17,7 +24,7 @@ Hide/Show/Focus Route and close/reload cleanup reuse the existing renderer. No s
 railway is built. Road proximity is not verified walking access, and the reservation is
 not a construction-ready native footprint. The route remains unsmoothed.
 
-**394 tests pass; 60 Lua files pass syntax checks.** The original 362 regressions remain.
+**412 tests pass; 61 Lua files pass syntax checks.** All baseline regressions remain.
 See [station data evidence, selection assumptions, changed files, limits and the focused
 native acceptance procedure](docs/station_aware_planning.md). The authoritative A*,
 hierarchy, inventories, network/worklist/batch and geometry algorithms are preserved.

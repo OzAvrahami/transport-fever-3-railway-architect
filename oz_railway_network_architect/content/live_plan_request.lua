@@ -1,5 +1,6 @@
 local adapter = ug_require "oz_railway_network_architect::/live_plan_api.lua"
 local flow = ug_require "oz_railway_network_architect::/live_plan_data.lua"
+local occupancy = ug_require "oz_railway_network_architect::/planning/station_occupancy.lua"
 local planner = ug_require "oz_railway_network_architect::/planning/corridor_planner.lua"
 local hierarchy = ug_require "oz_railway_network_architect::/planning/corridor_hierarchy.lua"
 local config = flow.config()
@@ -156,8 +157,16 @@ local function sample(session,x,y)
     local raw=adapter.sample(session.bounds,x,y)
     if session.anchorOverride and session.anchorOverride.objects then
         for _,o in ipairs(session.anchorOverride.objects) do
-            local b=o.box
-            if x>=b.minX-80 and x<=b.maxX+80 and y>=b.minY-80 and y<=b.maxY+80 then raw.blocked=true;break end
+            if occupancy.blocksSample(o,x,y) then raw.blocked=true;break end
+        end
+        for _,b in ipairs(session.anchorOverride.reservations or {}) do
+            if occupancy.blocksSample({kind="unknown",box=b},x,y) then raw.blocked=true;break end
+        end
+        if session.anchorOverride.directions then
+            for _,role in ipairs({"start","destination"}) do
+                if occupancy.blocksApproach(session.anchorOverride[role],session.anchorOverride.directions[role],x,y,
+                    session.layout and session.layout.spacing or 64) then raw.blocked=true end
+            end
         end
     end
     return raw

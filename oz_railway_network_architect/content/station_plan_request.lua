@@ -1,13 +1,42 @@
 local read=ug_require "oz_railway_network_architect::/live_plan_api.lua"
 local native=ug_require "oz_railway_network_architect::/station_site_api.lua"
 local sites=ug_require "oz_railway_network_architect::/planning/station_sites.lua"
+local occupancy=ug_require "oz_railway_network_architect::/planning/station_occupancy.lua"
 local corridor=ug_require "oz_railway_network_architect::/live_plan_request.lua"
 local flow=ug_require "oz_railway_network_architect::/live_plan_data.lua"
 local R={}
 local function log(s) debugPrint("[RNA:STATION] "..s) end
+local function audit(t,c)
+    local r=c.occupancy
+    if not t.audit then
+        t.audit={candidates=0,bodyConflicts=0,approachConflicts=0,examples=0,seen={},rejected={},body={},approach={},neighborhood={}}
+        for _,kind in ipairs(occupancy.kinds) do
+            t.audit.rejected[kind]=0
+            for _,region in ipairs({"body","approach","neighborhood"}) do t.audit[region][kind]=0 end
+        end
+    end
+    local a=t.audit;a.candidates=a.candidates+1
+    a.bodyConflicts=a.bodyConflicts+r.bodyConflicts;a.approachConflicts=a.approachConflicts+r.approachConflicts
+    for _,kind in ipairs(occupancy.kinds) do
+        if r.blockedKinds[kind] then a.rejected[kind]=a.rejected[kind]+1 end
+        for _,region in ipairs({"body","approach","neighborhood"}) do a[region][kind]=a[region][kind]+r[region][kind] end
+    end
+    for _,o in ipairs(r.examples) do
+        if a.examples<8 and not a.seen[o.id] then
+            a.seen[o.id]=true;a.examples=a.examples+1
+            log("OBSTRUCTION_SAMPLE town="..t.id.." candidate="..c.id.." entity="..tostring(o.id).." region="..o.region
+                .." class="..o.kind.." source="..o.source.." issue="..flow.text(o.issue))
+        end
+    end
+end
+local function finishPair(s)
+    log("PAIR_RESULT index="..s.pairIndex.." status="..s.child.status.." retained="..#s.routes)
+    s.child=nil;s.pairIndex=s.pairIndex+1;s.phase="pair"
+end
 local function stop(s,status,reason)
     if s.child and not s.child.finished then corridor.invalidate(s.child,reason) end
     s.child,s.towns,s.raw,s.samples,s.proposals,s.objects=nil,nil,nil,nil,nil,nil
+    s.revalidation=nil
     s.finished,s.status,s.reason=true,status,reason
     s.routes,s.pairs=nil,nil
     if status~="ok" then s.result=nil end
@@ -76,6 +105,14 @@ local function work(s)
         local t=s.towns[s.townIndex];local c=s.proposals[s.townIndex][s.siteIndex]
         if not c then
             t.sites=sites.shortlist(t.sites)
+            local a=t.audit
+            if a then
+                log("OCCUPANCY town="..t.id.." generated="..#s.proposals[s.townIndex].." screened="..a.candidates
+                    .." body_conflicts="..a.bodyConflicts.." approach_conflicts="..a.approachConflicts.." counts=candidate_entity_incidences")
+                for _,kind in ipairs(occupancy.kinds) do log("OCCUPANCY_CLASS town="..t.id.." class="..kind
+                    .." body="..a.body[kind].." approach="..a.approach[kind].." neighborhood="..a.neighborhood[kind]
+                    .." rejected_candidates="..a.rejected[kind]) end
+            end
             log("SHORTLIST town="..t.id.." sites="..#t.sites.." buildings="..#t.buildings.." existing_passenger_stations="..#t.stations)
             local reasons={};for reason in pairs(t.rejected) do reasons[#reasons+1]=reason end;table.sort(reasons)
             for _,reason in ipairs(reasons) do log("REJECT town="..t.id.." reason="..reason.." count="..t.rejected[reason]) end
@@ -85,7 +122,9 @@ local function work(s)
                     .." axis="..site.dx..","..site.dy.." approach="..site.approach.x..","..site.approach.y
                     .." urban_distance="..flow.number(e.urbanDistance).." road_endpoint_distance="..flow.number(e.roadEndpointDistance)
                     .." max_sampled_grade="..flow.number(e.maxSampledGrade).." track_endpoint_distance="..flow.number(e.trackEndpointDistance)
-                    .." passenger_station_distance="..flow.number(e.existingPassengerStationDistance).." walking_access=unknown")
+                    .." passenger_station_distance="..flow.number(e.existingPassengerStationDistance).." walking_access=unknown"
+                    .." vegetation_clearance="..e.vegetationClearance.." clearance_status="..e.clearanceStatus
+                    .." straight_exit_blocked="..tostring(e.approachExitBlocked))
             end
             if #t.sites==0 then error("station_planning_unresolved_no_suitable_sites town="..t.id,0) end
             s.townIndex=s.townIndex+1;s.siteIndex=1
@@ -94,6 +133,7 @@ local function work(s)
         end
         if not s.samples then
             local valid,reason=sites.screen(c,t,s.bounds)
+            audit(t,c)
             if not valid then t.rejected[reason]=(t.rejected[reason] or 0)+1;s.siteIndex=s.siteIndex+1;return end
             s.samples={}
         end
@@ -114,10 +154,13 @@ local function work(s)
         if not pair or s.pairIndex>2 then s.phase="verify";s.verifyIndex=1;return end
         validateSources(s)
         local a,b=pair.source,pair.destination
-        log("PAIR index="..s.pairIndex.." source="..a.id.." destination="..b.id.." screen_score="..flow.number(pair.score))
+        log("PAIR index="..s.pairIndex.." source="..a.id.." destination="..b.id.." screen_score="..flow.number(pair.score)
+            .." blocked_straight_exits="..pair.blockedExits)
         s.child=corridor.start({id=s.world,tick=s.tick},s.sourceId,s.destinationId,s.requestId,
             {start={townId=s.sourceId,x=a.approach.x,y=a.approach.y,z=a.approach.z},
-             destination={townId=s.destinationId,x=b.approach.x,y=b.approach.y,z=b.approach.z},objects=s.objects})
+             destination={townId=s.destinationId,x=b.approach.x,y=b.approach.y,z=b.approach.z},objects=s.objects,
+             reservations={sites.bounds(a,a.length/2,a.width/2),sites.bounds(b,b.length/2,b.width/2)},
+             directions={start={dx=a.dx,dy=a.dy},destination={dx=b.dx,dy=b.dy}}})
         s.phase="corridor";s.progress="Planning railway between station sites..."
     elseif s.phase=="corridor" then
         corridor.step(s.child)
@@ -127,27 +170,54 @@ local function work(s)
             error({status=child.status,reason="station_corridor_safety_stop:"..child.status..":"..flow.text(child.reason)},0)
         end
         if child.status=="ok" and child.result and child.result.complete then
-            for _,c in ipairs(child.result.candidates) do
-                if sites.approaches(c,pair) then
-                    c.stationSites={source=pair.source,destination=pair.destination}
-                    c.stationPairScore=pair.source.siteScore+pair.destination.siteScore
-                    c.jointScore=c.score.total+128*c.stationPairScore
-                    c.id="station"..s.pairIndex.."-"..c.id
-                    s.routes[#s.routes+1]=c
-                    s.lastSnapshot=child.result.snapshot
-                    break -- One real corridor per evaluated station pair, never fabricated alternatives.
-                end
-            end
+            s.phase="corridor_check";s.candidateIndex=1;s.waypointIndex=2;s.routeVegetation=false
+        else finishPair(s) end
+    elseif s.phase=="corridor_check" then
+        local c=s.child.result.candidates[s.candidateIndex];local pair=s.pairs[s.pairIndex]
+        if not c then finishPair(s);return end
+        local function reject(reason)
+            log("CORRIDOR_CONFLICT candidate="..c.id.." reason="..reason)
+            s.candidateIndex=s.candidateIndex+1;s.waypointIndex=2;s.routeVegetation=false
         end
-        log("PAIR_RESULT index="..s.pairIndex.." status="..child.status.." retained="..#s.routes)
-        s.child=nil;s.pairIndex=s.pairIndex+1;s.phase="pair"
+        if s.waypointIndex==2 and not sites.approaches(c,pair) then reject("station_approach_or_body");return end
+        for i=s.waypointIndex,math.min(s.waypointIndex+15,#c.waypoints) do
+            local obstacle,vegetation=occupancy.segment(c.waypoints[i-1],c.waypoints[i],s.objects)
+            if obstacle then reject("hard_"..occupancy.kind(obstacle).." entity="..obstacle.id);return end
+            s.routeVegetation=s.routeVegetation or vegetation;s.waypointIndex=i+1
+        end
+        if s.waypointIndex>#c.waypoints then
+            c.stationSites={source=pair.source,destination=pair.destination}
+            c.vegetationClearanceUnverified=s.routeVegetation
+            c.stationPairScore=pair.source.siteScore+pair.destination.siteScore
+            c.jointScore=c.score.total+128*c.stationPairScore
+            c.id="station"..s.pairIndex.."-"..c.id
+            s.routes[#s.routes+1]=c;s.lastSnapshot=s.child.result.snapshot
+            log("CORRIDOR_OCCUPANCY candidate="..c.id.." hard_conflicts=0 vegetation_clearance_unverified="..tostring(s.routeVegetation)
+                .." coverage=collected_local_neighborhoods construction=unverified")
+            finishPair(s) -- One real corridor per evaluated station pair, never fabricated alternatives.
+        end
     elseif s.phase=="verify" then
         if #s.routes==0 then error("station_planning_unresolved_no_compatible_corridor",0) end
         validateSources(s)
         local c=s.routes[s.verifyIndex]
         if c then
-            if not native.clear(c.stationSites.source,s.world) or not native.clear(c.stationSites.destination,s.world) then error("station_reservation_changed",0) end
-            s.verifyIndex=s.verifyIndex+1;return
+            local site=c.stationSites[s.verifyRole==2 and "destination" or "source"]
+            if not s.revalidation then s.revalidation=native.startClear(site,s.world);return end
+            native.stepClear(s.revalidation)
+            if not s.revalidation.finished then return end
+            local clear,reason,report=s.revalidation.clear,s.revalidation.reason,s.revalidation.report
+            s.revalidation=nil
+            log("REVALIDATION town="..site.townId.." clear="..tostring(clear).." body_conflicts="..report.bodyConflicts
+                .." approach_conflicts="..report.approachConflicts.." vegetation_clearance="..report.vegetationClearance.." reason="..flow.text(reason))
+            if not clear then
+                for _,o in ipairs(report.examples) do log("REVALIDATION_SAMPLE entity="..tostring(o.id).." class="..o.kind
+                    .." region="..o.region.." source="..o.source.." issue="..flow.text(o.issue)) end
+                error("station_reservation_changed:"..reason,0)
+            end
+            site.evidence.finalVegetationClearance=report.vegetationClearance
+            if report.vegetationClearance>0 then site.evidence.clearanceStatus="provisional_vegetation_clearance" end
+            if s.verifyRole==2 then s.verifyIndex=s.verifyIndex+1;s.verifyRole=1 else s.verifyRole=2 end
+            return
         end
         table.sort(s.routes,function(a,b) return a.jointScore==b.jointScore and a.id<b.id or a.jointScore<b.jointScore end)
         for i,candidate in ipairs(s.routes) do candidate.rank=i end

@@ -1,4 +1,5 @@
 -- Approximate passenger through-station reservations, not native station footprints.
+local occupancy=ug_require "oz_railway_network_architect::/planning/station_occupancy.lua"
 local sites={length=160,width=48,halfClearLength=256,halfClearWidth=32,
     approach=128,maxGrade=0.03,maxHeightRange=8,maxUrbanDistance=512,maxRoadDistance=256}
 local function finite(v) return type(v)=="number" and v==v and math.abs(v)<1e7 end
@@ -47,20 +48,27 @@ function sites.generate(town,other)
     return out
 end
 function sites.screen(c,town,bounds)
+    local clear,reason,report=occupancy.inspect(c,town.objects)
+    c.occupancy=report
     local b=c.clearance
     if b.minX<=bounds.minX or b.maxX>=bounds.maxX or b.minY<=bounds.minY or b.maxY>=bounds.maxY then return nil,"boundary" end
     local urban,road,rail,station=math.huge,math.huge,math.huge,math.huge
     for _,v in ipairs(town.buildings) do urban=math.min(urban,boxDistance(c.x,c.y,v.box)) end
     if urban>sites.maxUrbanDistance then return nil,"remote_from_occupied_town" end
+    if not clear then return nil,reason end
     for _,v in ipairs(town.objects) do
-        if sites.intersects(b,v.box) then return nil,"occupied_reservation_or_approach" end
         if v.kind=="street" then road=math.min(road,distance(c.x,c.y,v.a),distance(c.x,c.y,v.b)) end
         if v.kind=="track" then rail=math.min(rail,distance(c.x,c.y,v.a),distance(c.x,c.y,v.b)) end
     end
     if road>sites.maxRoadDistance then return nil,"no_verified_nearby_road_endpoint" end
     for _,v in ipairs(town.stations) do station=math.min(station,boxDistance(c.x,c.y,v.box)) end
     c.evidence={urbanDistance=urban,roadEndpointDistance=road,trackEndpointDistance=rail<math.huge and rail or nil,
-        existingPassengerStationDistance=station<math.huge and station or nil,walkingAccess="unknown",construction="unverified"}
+        existingPassengerStationDistance=station<math.huge and station or nil,walkingAccess="unknown",construction="unverified",
+        vegetationClearance=report.vegetationClearance,clearanceStatus=report.vegetationClearance>0 and "provisional_vegetation_clearance" or "no_known_required_region_conflict"}
+    -- Inspection evidence, not another mandatory footprint: prefer a clear straight
+    -- exit over one known to meet an obstacle immediately beyond the approach point.
+    local exit=occupancy.segment(c.approach,{x=c.approach.x+c.dx*128,y=c.approach.y+c.dy*128},town.objects)
+    c.evidence.approachExitBlocked=exit~=nil
     return true
 end
 function sites.samplePosition(c,index)
@@ -86,7 +94,11 @@ function sites.evaluate(c,samples)
     return c
 end
 function sites.shortlist(values)
-    table.sort(values,function(a,b) return a.siteScore==b.siteScore and a.id<b.id or a.siteScore<b.siteScore end)
+    table.sort(values,function(a,b)
+        local x,y=a.evidence.approachExitBlocked==true,b.evidence.approachExitBlocked==true
+        if x~=y then return not x end
+        return a.siteScore==b.siteScore and a.id<b.id or a.siteScore<b.siteScore
+    end)
     local out={}
     for _,c in ipairs(values) do
         local distinct=true
@@ -100,13 +112,17 @@ function sites.pairs(a,b)
     for _,s in ipairs(a) do for _,d in ipairs(b) do
         local dx,dy=d.approach.x-s.approach.x,d.approach.y-s.approach.y
         local length=math.sqrt(dx*dx+dy*dy)
-        if length>0 and not sites.intersects(s.clearance,d.clearance) then
+        if length>0 and not occupancy.overlaps(s,d) then
             local alignment=2-(dx*s.dx+dy*s.dy)/length+(dx*d.dx+dy*d.dy)/length
             out[#out+1]={source=s,destination=d,id=s.id.."/"..d.id,
+                blockedExits=(s.evidence.approachExitBlocked and 1 or 0)+(d.evidence.approachExitBlocked and 1 or 0),
                 score=s.siteScore+d.siteScore+length/1024+4*alignment}
         end
     end end
-    table.sort(out,function(a,b) return a.score==b.score and a.id<b.id or a.score<b.score end)
+    table.sort(out,function(a,b)
+        if a.blockedExits~=b.blockedExits then return a.blockedExits<b.blockedExits end
+        return a.score==b.score and a.id<b.id or a.score<b.score
+    end)
     return out
 end
 -- Independent XY segment/rectangle intersection. Keep the full corridor outside

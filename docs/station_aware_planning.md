@@ -1,5 +1,10 @@
 # Station-aware passenger railway planning
 
+**Policy update:** the blanket 512×64 occupancy exclusion and 80 m route masks described
+below are superseded by the [targeted native-acceptance correction](station_site_occupancy_acceptance_fix.md).
+This document records the original implementation; the correction defines current
+region classification, revalidation, diagnostics and test results.
+
 Baseline: `main`, `9f3af08`, initially clean. The owner reports the cyan route zones
 working in native Freeplay. **The station workflow added here has not been tested in
 TF3.** It is ready for code review, not a claim that Midhurst–Morley now passes native

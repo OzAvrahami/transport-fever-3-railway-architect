@@ -21,11 +21,15 @@ local function finish(r, status, reason)
         .. " max_work_seconds=" .. string.format("%.6f", r.maxWork or 0) .. " timing_resolution=unverified")
 end
 function request.invalidate(r, reason) finish(r, "invalidated", reason) end
-function request.start(world, epoch, id)
+function request.start(world, epoch, id, mode)
+    local acceptedMode, capacity = data.analysisMode(mode)
+    if not acceptedMode then return nil, capacity end
     local r = {id = id, epoch = epoch, world = world.id, startTick = world.tick, tick = world.tick,
+        analysisMode = acceptedMode, minCapacity = capacity,
         status = "analyzing", phase = "town_index", cursor = 1, missingCapacity = 0, rejected = 0,
         warnings = {}, warningCount = 0, maxWork = 0, message = "Collecting independent network snapshot..."}
-    log(r, "START world=" .. world.id .. " tick=" .. world.tick .. " max_towns=32 max_pairs=496")
+    log(r, "START world=" .. world.id .. " tick=" .. world.tick .. " max_towns=32 max_pairs=496"
+        .. " mode=" .. r.analysisMode .. " min_capacity=" .. r.minCapacity)
     return r
 end
 local function nextPhase(r, phase)
@@ -44,7 +48,7 @@ local function work(r)
         r.ids, r.rejected = apiRead.ids(32)
         r.input = {unit = "world_units", snapshotId = "world:" .. r.world .. ":epoch:" .. r.epoch .. ":network:" .. r.id,
             source = "TOWN / entity_util.getPosition bounding-volume center; not a station", towns = {},
-            preferences = {maxTowns = 32, maxPairs = 496}}
+            preferences = {maxTowns = 32, maxPairs = 496, minCapacity = r.minCapacity}}
         nextPhase(r, "towns")
     elseif r.phase == "towns" then
         if batch(r, r.ids, 4, function(id)
@@ -112,7 +116,9 @@ local function work(r)
         -- This call is not preemptible; the measured-work guard runs afterward.
         r.result = planner.plan(r.input)
         if r.result.status ~= "ok" then error("network input rejected: " .. r.result.status, 0) end
+        r.result.analysisMode = r.analysisMode -- Live metadata; pure algorithm remains unchanged.
         r.snapshot = {world = r.world, startTick = r.startTick, endTick = r.tick,
+            analysisMode = r.analysisMode, minCapacity = r.result.preferences.minCapacity,
             source = r.input.source, towns = r.input.towns, entityIds = r.ids,
             industrySource = r.input.industries and r.input.industries.source,
             railSource = r.input.rail and r.input.rail.source,
@@ -122,7 +128,8 @@ local function work(r)
     elseif r.phase == "summary" then
         r.summary = data.summary(r)
         log(r, "RESULT towns=" .. #r.result.towns .. " connections=" .. #r.result.recommendations
-            .. " pairs=" .. r.result.stats.pairs .. " astar_searches=0")
+            .. " pairs=" .. r.result.stats.pairs .. " astar_searches=0"
+            .. " mode=" .. r.result.analysisMode .. " min_capacity=" .. r.result.preferences.minCapacity)
         r.pendingComplete = true
     end
 end

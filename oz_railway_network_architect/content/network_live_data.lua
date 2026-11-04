@@ -1,8 +1,15 @@
--- Pure projection and bounded panel DTO. No engine or policy implementation.
+-- Pure projection, live mode contract and bounded panel DTO. No engine or topology algorithm.
 local flow = ug_require "oz_railway_network_architect::/live_plan_data.lua"
 local industry = ug_require "oz_railway_network_architect::/industry_inventory_data.lua"
 local rail = ug_require "oz_railway_network_architect::/rail_inventory_data.lua"
 local data = {}
+-- Live request policy only; never change the pure topology defaults.
+function data.analysisMode(value)
+    if value == nil then value = "standard" end
+    if value == "standard" then return value, 200 end
+    if value == "exploratory" then return value, 100 end
+    return nil, "invalid_analysis_mode"
+end
 function data.text(v) return flow.text(v):sub(1, 160) end
 function data.town(raw, bounds, capacity)
     if not flow.validTown(raw, bounds) or math.abs(raw.x) > 1000000 or math.abs(raw.y) > 1000000
@@ -42,7 +49,9 @@ end
 local function codes(values) return table.concat(values or {}, ", "):gsub("_", " ") end
 function data.summary(r)
     local result = r.result
-    local s = {epoch = r.epoch, world = r.world, requestId = r.id, snapshotId = result.snapshotId, links = {}, lines = {}}
+    local p = result.preferences
+    local s = {epoch = r.epoch, world = r.world, requestId = r.id, snapshotId = result.snapshotId,
+        analysisMode = result.analysisMode, minCapacity = p.minCapacity, links = {}, lines = {}}
     local main, branch, omitted, deferred, hubs = 0, 0, {}, 0, {}
     local names = {}; for _, t in ipairs(result.towns) do
         names[t.id] = (t.name or "Town") .. " [#" .. t.id .. "]"
@@ -83,7 +92,9 @@ function data.summary(r)
         "Industries: " .. #result.industries .. " context records; no freight links inferred. Missing capacity: " .. r.missingCapacity .. "; rejected towns: " .. r.rejected,
         "Snapshot world " .. r.world .. ", ticks " .. r.startTick .. "-" .. r.tick .. "; not atomic or a continuously refreshed assessment.",
         "Read warnings: " .. r.warningCount .. (#r.warnings > 0 and (". " .. table.concat(r.warnings, "; ")) or ""),
-        "Policy: minimum distance 1000; capacity 200; major anchor 1000; assumed unknown difficulty 0.2; degree limit 3. These are study preferences.",
+        string.format("Network analysis mode: %s | Minimum residential capacity: %d | Passenger demand: unknown | Economic feasibility: unverified. Policy: minimum distance %g; maximum distance %g; major anchor %g; minimum score %g; assumed unknown difficulty %g; degree limit %d. These are study preferences.",
+            result.analysisMode == "exploratory" and "Exploratory" or "Standard", p.minCapacity,
+            p.minDistance, p.maxDistance, p.majorCapacity, p.minScore, p.unknownDifficulty, p.maxDegree),
     }
     return s
 end
@@ -92,6 +103,8 @@ function data.valid(s, owner)
         or s.requestId ~= owner.networkRequestId or type(s.snapshotId) ~= "string" or #s.snapshotId > 160
         or type(s.lines) ~= "table" or #s.lines > 9
         or type(s.links) ~= "table" or #s.links > 55 then return false end
+    local mode, capacity = data.analysisMode(s.analysisMode)
+    if s.analysisMode ~= mode or not mode or s.minCapacity ~= capacity then return false end
     for _, line in ipairs(s.lines) do if type(line) ~= "string" or #line > 1600 then return false end end
     for _, link in ipairs(s.links) do
         if type(link) ~= "table" or type(link.id) ~= "string" or type(link.label) ~= "string" or type(link.recommended) ~= "boolean"

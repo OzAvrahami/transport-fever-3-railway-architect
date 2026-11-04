@@ -2,6 +2,14 @@
 
 ## Current milestone
 
+Authorized native-acceptance fix only: selectable Standard/Exploratory network analysis.
+Phase 6D is complete; this is not a new milestone. Keep the pure topology defaults
+and algorithm unchanged. Apply only a live request-local minCapacity of 200/100,
+strictly validate mode, and record the accepted mode independently of UI selection.
+Selecting a mode never analyzes or edits a worklist. Preserve all snapshot/freshness,
+event and construction prohibitions below. Stop for owner review and targeted retest;
+the owner performs any Git commit/push and staging installation.
+
 Phase 6D only: explicit read-only geometry inspection and consolidated native acceptance readiness.
 No native proposal creation/evaluation or construction command execution. Preserve the original
 topology result and individual handoff, accepted local work, window styling, subscriptions, inventories

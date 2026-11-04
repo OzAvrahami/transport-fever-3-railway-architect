@@ -570,6 +570,21 @@ local function find(tree, kind, label)
     visit(tree); return found
 end
 
+local function modeCombo(tree)
+    for _, combo in ipairs(find(tree, "ComboBox")) do
+        if combo.params.items[1] and combo.params.items[1].params.value == "standard" then return combo end
+    end
+end
+-- Existing town/candidate/link assertions address their own controls, independent
+-- of the new mode selector. Mode registration/options are tested separately below.
+local function planningCombos(tree)
+    local result = {}
+    for _, combo in ipairs(find(tree, "ComboBox")) do
+        if combo ~= modeCombo(tree) then result[#result + 1] = combo end
+    end
+    return result
+end
+
 test("launcher plugin requires a horizontal layout root containing exactly one Button", function()
     local gui, step, untilState = newSession(); ready(step, untilState)
     local render, poll, tree, controls = mountUI()
@@ -591,16 +606,16 @@ test("registered UI routes selection and one click through the real handler", fu
     equal(logCount("UI_INIT"), 1); equal(heightReads, 0)
     find(tree, "Button", "Railway Network Architect")[1].params.onClick()
     tree = render()
-    local combos = find(tree, "ComboBox")
+    local combos = planningCombos(tree)
     equal(#combos, 2)
     equal(combos[1].params.items[2].params.content.params.text, "Twin [#10]")
     equal(combos[1].params.items[3].params.content.params.text, "Twin [#20]")
     combos[1].params.onValueChange("10")
-    tree = render(); combos = find(tree, "ComboBox")
+    tree = render(); combos = planningCombos(tree)
     equal(combos[2].params.items[2].params.available, false)
     combos[2].params.onValueChange("10")
     tree = render(); equal(find(tree, "Button", "Plan")[1].params.meta.enabled, false)
-    find(tree, "ComboBox")[2].params.onValueChange("20")
+    planningCombos(tree)[2].params.onValueChange("20")
     tree = render(); local button = find(tree, "Button", "Plan")[1]
     equal(button.params.meta.enabled, true)
     button.params.onClick(); button.params.onClick()
@@ -617,11 +632,11 @@ test("UI session change clears selections and broken transport displays an error
     local gui, step, untilState, event, callbacks = newSession(); ready(step, untilState)
     local render, poll, tree = mountUI()
     find(tree, "Button", "Railway Network Architect")[1].params.onClick()
-    tree = render(); find(tree, "ComboBox")[1].params.onValueChange("10")
-    tree = render(); find(tree, "ComboBox")[2].params.onValueChange("20")
+    tree = render(); planningCombos(tree)[1].params.onValueChange("10")
+    tree = render(); planningCombos(tree)[2].params.onValueChange("20")
     callbacks.guiHandleEvent(nil, nil, gui, "test", "gameUI", "reactPostInit", {})
     poll(); tree = render()
-    for _, combo in ipairs(find(tree, "ComboBox")) do equal(combo.params.value, "") end
+    for _, combo in ipairs(planningCombos(tree)) do equal(combo.params.value, "") end
     api.gui.fireGuiScriptEvent = function() error("transport failed", 0) end
     poll(); tree = render()
     local found = false
@@ -638,7 +653,7 @@ test("launcher is a single button and form is a native window with verified focu
     equal(controls.panel, nil); equal(controls.adds, 0); equal(heightReads, 0)
     controls.launcher.params.onClick(); tree = render()
     equal(controls.adds, 1); equal(controls.panel.kind, "Window")
-    equal(#find(controls.launcher, "ComboBox"), 0); equal(#find(controls.panel, "ComboBox"), 2)
+    equal(#find(controls.launcher, "ComboBox"), 0); equal(#find(controls.panel, "ComboBox"), 3)
     local properties = controls.panel.params
     equal(properties.closable, true); equal(properties.movable, true)
     equal(properties.autoFocusOnBecomingVisible, true); equal(properties.autoVisibilityOnFocusChange, false)
@@ -656,11 +671,11 @@ test("reopening preserves selection, closing never cancels planning, and refresh
     local gui, step, untilState = newSession(); ready(step, untilState)
     local render, poll, tree, controls = mountUI()
     controls.launcher.params.onClick(); tree = render()
-    find(tree, "ComboBox")[1].params.onValueChange("10"); tree = render()
-    find(tree, "ComboBox")[2].params.onValueChange("20"); tree = render()
+    planningCombos(tree)[1].params.onValueChange("10"); tree = render()
+    planningCombos(tree)[2].params.onValueChange("20"); tree = render()
     controls.panel.params.onClose(); tree = render()
     controls.launcher.params.onClick(); tree = render()
-    equal(find(tree, "ComboBox")[1].params.value, "10"); equal(find(tree, "ComboBox")[2].params.value, "20")
+    equal(planningCombos(tree)[1].params.value, "10"); equal(planningCombos(tree)[2].params.value, "20")
     find(tree, "Button", "Plan")[1].params.onClick()
     render() -- only an already dispatched request continues after closing
     controls.panel.params.onClose(); tree = render(); untilState(completed)
@@ -669,20 +684,20 @@ test("reopening preserves selection, closing never cancels planning, and refresh
     equal(find(tree, "Button", "Plan")[1].params.meta.enabled, true)
     equal(logCount("REQUEST_START"), 1)
     find(tree, "Button", "Refresh towns")[1].params.onClick(); tree = render()
-    for _, combo in ipairs(find(tree, "ComboBox")) do equal(combo.params.value, "") end
+    for _, combo in ipairs(planningCombos(tree)) do equal(combo.params.value, "") end
 end)
 
 test("closed-window session reset clears restored selection before new request", function()
     local gui, step, untilState, event, callbacks = newSession(); ready(step, untilState)
     local render, poll, tree, controls = mountUI()
     controls.launcher.params.onClick(); tree = render()
-    find(tree, "ComboBox")[1].params.onValueChange("10"); tree = render()
-    find(tree, "ComboBox")[2].params.onValueChange("20"); tree = render()
+    planningCombos(tree)[1].params.onValueChange("10"); tree = render()
+    planningCombos(tree)[2].params.onValueChange("20"); tree = render()
     controls.panel.params.onClose(); tree = render()
     callbacks.guiHandleEvent(nil, nil, gui, "test", "gameUI", "reactPostInit", {})
     ready(step, untilState)
     controls.launcher.params.onClick(); tree = render()
-    for _, combo in ipairs(find(tree, "ComboBox")) do equal(combo.params.value, "") end
+    for _, combo in ipairs(planningCombos(tree)) do equal(combo.params.value, "") end
     equal(find(tree, "Button", "Plan")[1].params.meta.enabled, false)
     equal(heightReads, 0); equal(logCount("REQUEST_START"), 0)
 end)
@@ -733,7 +748,7 @@ test("restricted mount and timer only enqueue; main-thread joins coalesce status
     equal(#controls.joins, 1); equal(#controls.events, 0)
     controls.flush(); tree = render()
     equal(#controls.events, 1); assert(controls.events[1].name:match("%.status$"))
-    equal(#find(tree, "ComboBox")[1].params.items, 3)
+    equal(#planningCombos(tree)[1].params.items, 3)
     poll(); equal(#controls.events, 1); controls.flush()
     poll(); controls.flush(); equal(#controls.events, 3)
     equal(logCount("UI_ERROR"), 0); equal(logCount("REQUEST_START"), 0); equal(heightReads, 0)
@@ -743,8 +758,8 @@ test("Plan and Refresh each dispatch once in joins with queued-click protection"
     local gui, step, untilState = newSession(); ready(step, untilState)
     local render, poll, tree, controls = mountUI()
     controls.launcher.params.onClick(); tree = render()
-    find(tree, "ComboBox")[1].params.onValueChange("10"); tree = render()
-    find(tree, "ComboBox")[2].params.onValueChange("20"); tree = render()
+    planningCombos(tree)[1].params.onValueChange("10"); tree = render()
+    planningCombos(tree)[2].params.onValueChange("20"); tree = render()
     controls.autoJoin = false
     local button = find(tree, "Button", "Plan")[1]
     for _ = 1, 10 do button.params.onClick() end
@@ -758,7 +773,7 @@ test("Plan and Refresh each dispatch once in joins with queued-click protection"
     equal(#controls.joins, 1); controls.flush(); tree = render()
     equal(logCount("ROUTE_PROBE_BEGIN"), 0)
     assert(controls.events[#controls.events].name:match("%.refresh$"))
-    for _, combo in ipairs(find(tree, "ComboBox")) do equal(combo.params.value, "") end
+    for _, combo in ipairs(planningCombos(tree)) do equal(combo.params.value, "") end
     equal(logCount("REQUEST_START"), 1)
 end)
 
@@ -766,14 +781,14 @@ test("unmount cancels pending dispatch and stale handlers cannot update a reopen
     local gui, step, untilState = newSession(); ready(step, untilState)
     local render, poll, tree, controls = mountUI(); controls.autoJoin = false
     controls.launcher.params.onClick(); tree = render()
-    local oldSelection = find(tree, "ComboBox")[1].params.onValueChange
+    local oldSelection = planningCombos(tree)[1].params.onValueChange
     local oldRefresh = find(tree, "Button", "Refresh towns")[1].params.onClick
     controls.detachWindow(); tree = render()
     controls.launcher.params.onClick(); tree = render()
     equal(#controls.joins, 2)
     oldSelection("10"); oldRefresh()
     controls.flush(); tree = render()
-    equal(#controls.events, 1); equal(find(tree, "ComboBox")[1].params.value, "")
+    equal(#controls.events, 1); equal(planningCombos(tree)[1].params.value, "")
     equal(logCount("REQUEST_START"), 0); equal(heightReads, 0)
 end)
 
@@ -793,8 +808,8 @@ test("closing before a queued Plan joins cancels dispatch, not an accepted plann
     local gui, step, untilState = newSession(); ready(step, untilState)
     local render, poll, tree, controls = mountUI()
     controls.launcher.params.onClick(); tree = render()
-    find(tree, "ComboBox")[1].params.onValueChange("10"); tree = render()
-    find(tree, "ComboBox")[2].params.onValueChange("20"); tree = render()
+    planningCombos(tree)[1].params.onValueChange("10"); tree = render()
+    planningCombos(tree)[2].params.onValueChange("20"); tree = render()
     find(tree, "Button", "Plan")[1].params.onClick()
     equal(#controls.joins, 1)
     controls.panel.params.onClose(); controls.flush()
@@ -921,14 +936,14 @@ test("nil handler or discarded return is diagnosed without fabricated towns or r
         equal(logCount("COMM GUI_DISPATCH"), 1); equal(logCount("COMM GUI_RESULT type=nil"), 1)
         equal(logCount("COMM HANDLER_RESPONSE"), mode == "handler_nil" and 0 or 1)
         assert(hasLog("planner response unavailable; response_type=nil"))
-        equal(#find(tree, "ComboBox")[1].params.items, 1)
+        equal(#planningCombos(tree)[1].params.items, 1)
         for _ = 1, 20 do poll() end
         equal(logCount("UI_ERROR"), 1); equal(#controls.events, 1)
         callbacks.guiHandleEvent = original; controls.resultFilter = nil
         find(tree, "Button", "Refresh towns")[1].params.onClick(); tree = render() -- diagnostic only
         find(tree, "Button", "Refresh towns")[1].params.onClick(); render()
         untilState(function(s) return s.status == "idle" end); poll(); tree = render()
-        equal(#find(tree, "ComboBox")[1].params.items, 3)
+        equal(#planningCombos(tree)[1].params.items, 3)
         equal(logCount("REQUEST_START"), 0); equal(heightReads, 0)
     end
 end)
@@ -951,7 +966,7 @@ test("malformed native responses report precise validation failures and cannot p
         local render, poll, tree, controls = mountUI(); controls.resultFilter = case[1]
         controls.launcher.params.onClick(); tree = render()
         assert(hasLog(case[2]), case[2]); equal(logCount("UI_ERROR"), 1)
-        equal(#find(tree, "ComboBox")[1].params.items, 1)
+        equal(#planningCombos(tree)[1].params.items, 1)
         poll(); equal(#controls.events, 1); equal(heightReads, 0)
     end
 end)
@@ -1041,12 +1056,12 @@ test("denied delivery reproduces nil with no handler entry and does not silently
     controls.launcher.params.onClick(); tree = render()
     equal(logCount("COMM GUI_DISPATCH"), 1); equal(logCount("COMM GUI_RESULT type=nil"), 1)
     equal(logCount("COMM HANDLER_ENTRY"), 0)
-    equal(#find(tree, "ComboBox")[1].params.items, 1)
+    equal(#planningCombos(tree)[1].params.items, 1)
     for _ = 1, 20 do poll() end
     equal(#controls.events, 1); equal(logCount("UI_ERROR"), 1)
     find(tree, "Button", "Refresh towns")[1].params.onClick(); render()
     equal(#controls.events, 2); equal(logCount("COMM HANDLER_ENTRY"), 0)
-    tree = render(); equal(#find(tree, "ComboBox")[1].params.items, 1) -- not applied as fallback data
+    tree = render(); equal(#planningCombos(tree)[1].params.items, 1) -- not applied as fallback data
     equal(#gui:get().towns, 10); equal(logCount("REQUEST_START"), 0); equal(heightReads, 0)
 end)
 
@@ -1074,7 +1089,7 @@ test("missing engine subscriptions reproduces idle ten-town owner with nil UI re
     equal(#controls.events, 2); equal(controls.events[2].name, "oz_railway_network_architect.plan.refresh")
     equal(gui:get().status, "loading")
     untilState(function(s) return s.status == "idle" end); poll(); tree = render()
-    equal(#find(tree, "ComboBox")[1].params.items, 11)
+    equal(#planningCombos(tree)[1].params.items, 11)
     equal(logCount("EVENT_SUBSCRIPTIONS_READY"), 1); assert(hasLog("HANDLER_RESPONSE type=table"))
     equal(logCount("REQUEST_START"), 0); equal(heightReads, 0)
 end)
@@ -1129,7 +1144,7 @@ test("Refresh performs one normal request per click with no remaining routing pr
     equal(controls.events[2].request._rnaRoutingProbe, nil)
     equal(logCount("ROUTE_PROBE_BEGIN"), 0); equal(logCount("REQUEST_START"), 0)
     untilState(function(s) return s.status == "idle" end); poll(); controls.flush(); tree = render()
-    equal(#find(tree, "ComboBox")[1].params.items, 11)
+    equal(#planningCombos(tree)[1].params.items, 11)
 end)
 
 test("registration lookup uses exact gs resource name once without exposing engine state", function()
@@ -1153,8 +1168,8 @@ test("distant towns refine through working event transport without changing sele
     entities[20].x, entities[20].y, entities[20].name = 3676, -1268, "Winterton"
     ready(step, untilState)
     local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
-    find(tree, "ComboBox")[1].params.onValueChange("10"); tree = render()
-    find(tree, "ComboBox")[2].params.onValueChange("20"); tree = render()
+    planningCombos(tree)[1].params.onValueChange("10"); tree = render()
+    planningCombos(tree)[2].params.onValueChange("20"); tree = render()
     find(tree, "Button", "Plan")[1].params.onClick(); render()
     untilState(completed); poll(); tree = render()
     equal(gui:get().request.status, "ok")
@@ -1167,7 +1182,7 @@ test("distant towns refine through working event transport without changing sele
         return false
     end
     equal(gui:get().message, expected); equal(messageVisible(), true)
-    equal(find(tree, "ComboBox")[1].params.value, "10"); equal(find(tree, "ComboBox")[2].params.value, "20")
+    equal(planningCombos(tree)[1].params.value, "10"); equal(planningCombos(tree)[2].params.value, "20")
     assert(hasLog("[RNA:PLAN:4B3] SUMMARY status=ok"))
     assert(heightReads > 0); equal(#gui:get().request.result.candidates, 1); equal(logCount("REQUEST_START"), 1)
     controls.panel.params.onClose(); render(); controls.launcher.params.onClick(); tree = render()
@@ -1249,13 +1264,13 @@ test("completed real planner result reaches panel summary through unchanged stat
     local gui, step, untilState, event = newSession(); ready(step, untilState)
     local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
     assert(panelText(tree):find("in-panel only; not a map overlay", 1, true))
-    equal(#find(tree, "ComboBox"), 2); equal(heightReads, 0)
-    find(tree, "ComboBox")[1].params.onValueChange("10"); tree = render()
-    find(tree, "ComboBox")[2].params.onValueChange("20"); tree = render()
+    equal(#planningCombos(tree), 2); equal(heightReads, 0)
+    planningCombos(tree)[1].params.onValueChange("10"); tree = render()
+    planningCombos(tree)[2].params.onValueChange("20"); tree = render()
     find(tree, "Button", "Plan")[1].params.onClick(); tree = render()
-    equal(#find(tree, "ComboBox"), 2)
+    equal(#planningCombos(tree), 2)
     untilState(completed); poll(); tree = render()
-    equal(#find(tree, "ComboBox"), 3)
+    equal(#planningCombos(tree), 3)
     local state = gui:get(); local summary = assert(state.request.preview)
     equal(summary.candidates[1].start.z, -2)
     equal(summary.candidates[1].destination.x, state.request.result.candidates[1].waypoints[#state.request.result.candidates[1].waypoints].x)
@@ -1292,13 +1307,13 @@ test("candidate switching is local and preserves distinct canonical alternatives
     local count = #controls.events
     for i = 1, 3 do
         local c = result.candidates[i]
-        find(tree, "ComboBox")[3].params.onValueChange(c.id); tree = render()
-        equal(find(tree, "ComboBox")[3].params.value, c.id)
+        planningCombos(tree)[3].params.onValueChange(c.id); tree = render()
+        equal(planningCombos(tree)[3].params.value, c.id)
         assert(panelText(tree):find(string.format("Approximate length: %.1f", c.length), 1, true))
         equal(#controls.events, count); equal(heightReads, 0)
     end
-    find(tree, "ComboBox")[3].params.onValueChange("nonexistent"); tree = render()
-    equal(find(tree, "ComboBox")[3].params.value, result.candidates[3].id)
+    planningCombos(tree)[3].params.onValueChange("nonexistent"); tree = render()
+    equal(planningCombos(tree)[3].params.value, result.candidates[3].id)
     equal(logCount("REQUEST_START"), 0)
 end)
 
@@ -1324,7 +1339,7 @@ test("unsupported, unreachable, incomplete and search-limit results never expose
         ready(step, untilState); submit(gui, event); untilState(completed)
         assert(gui:get().status ~= "ok"); equal(event("status").preview, nil)
         local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
-        equal(#find(tree, "ComboBox"), 2)
+        equal(#planningCombos(tree), 2)
         assert(panelText(tree):find("No eligible corridor summary", 1, true))
     end
 end)
@@ -1333,14 +1348,14 @@ test("new request replaces summary and stale candidate callbacks cannot restore 
     local gui, step, untilState, event = newSession(); ready(step, untilState)
     submit(gui, event); untilState(completed)
     local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
-    local oldChoice = find(tree, "ComboBox")[3].params.onValueChange
-    submit(gui, event, 20, 10); poll(); tree = render(); equal(#find(tree, "ComboBox"), 2)
-    oldChoice("corridor_distance"); tree = render(); equal(#find(tree, "ComboBox"), 2)
+    local oldChoice = planningCombos(tree)[3].params.onValueChange
+    submit(gui, event, 20, 10); poll(); tree = render(); equal(#planningCombos(tree), 2)
+    oldChoice("corridor_distance"); tree = render(); equal(#planningCombos(tree), 2)
     untilState(completed); poll(); tree = render()
     local summary = gui:get().request.preview
     equal(summary.requestId, 2); equal(summary.source.id, 20); equal(summary.destination.id, 10)
-    local selected = find(tree, "ComboBox")[3].params.value
-    oldChoice("nonexistent"); tree = render(); equal(find(tree, "ComboBox")[3].params.value, selected)
+    local selected = planningCombos(tree)[3].params.value
+    oldChoice("nonexistent"); tree = render(); equal(planningCombos(tree)[3].params.value, selected)
     equal(logCount("PANEL_SUMMARY"), 2); equal(logCount("REQUEST_START"), 2)
 end)
 
@@ -1349,11 +1364,11 @@ test("world changes, reload and Refresh clear summaries through existing lifecyc
         local gui, step, untilState, event, callbacks = newSession(); ready(step, untilState)
         submit(gui, event); untilState(completed)
         local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
-        equal(#find(tree, "ComboBox"), 3)
+        equal(#planningCombos(tree), 3)
         if mode == "world" then worldId = 100
         elseif mode == "reload" then callbacks.guiHandleEvent(nil, nil, gui, "test", "gameUI", "reactPostInit", {})
         else find(tree, "Button", "Refresh towns")[1].params.onClick(); render() end
-        poll(); tree = render(); equal(#find(tree, "ComboBox"), 2)
+        poll(); tree = render(); equal(#planningCombos(tree), 2)
         equal(gui:get().request, nil); equal(logCount("REQUEST_START"), 1)
     end
 end)
@@ -1362,12 +1377,12 @@ test("reopen waits for fresh response and unmounted callbacks cannot restore a s
     local gui, step, untilState, event = newSession(); ready(step, untilState)
     submit(gui, event); untilState(completed)
     local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
-    local oldChoice = find(tree, "ComboBox")[3].params.onValueChange
+    local oldChoice = planningCombos(tree)[3].params.onValueChange
     controls.panel.params.onClose(); render(); equal(controls.panel, nil)
     controls.autoJoin = false; controls.launcher.params.onClick(); tree = render()
-    equal(#find(tree, "ComboBox"), 2)
-    oldChoice("corridor_distance"); equal(#find(render(), "ComboBox"), 2)
-    controls.flush(); tree = render(); equal(#find(tree, "ComboBox"), 3)
+    equal(#planningCombos(tree), 2)
+    oldChoice("corridor_distance"); equal(#planningCombos(render()), 2)
+    controls.flush(); tree = render(); equal(#planningCombos(tree), 3)
     controls.unmountLauncher(); render(); equal(controls.panel, nil)
     equal(logCount("REQUEST_START"), 1)
 end)
@@ -1377,13 +1392,13 @@ test("malformed preview pauses polling and explicit refresh recovers without sta
     submit(gui, event); untilState(completed)
     local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
     controls.resultFilter = function(value) value.preview = {kind = "panel_summary"}; return value end
-    poll(); tree = render(); equal(#find(tree, "ComboBox"), 2)
+    poll(); tree = render(); equal(#planningCombos(tree), 2)
     assert(panelText(tree):find("invalid corridor summary", 1, true))
     local count = #controls.events; for _ = 1, 10 do poll(); render() end; equal(#controls.events, count)
     controls.resultFilter = nil
     find(tree, "Button", "Refresh towns")[1].params.onClick(); render()
     untilState(function(s) return s.status == "idle" end); poll(); tree = render()
-    equal(#find(tree, "ComboBox"), 2); equal(logCount("REQUEST_START"), 1)
+    equal(#planningCombos(tree), 2); equal(logCount("REQUEST_START"), 1)
 end)
 
 test("consumed rejected click token cannot expose summary under a different request ID", function()
@@ -1393,7 +1408,7 @@ test("consumed rejected click token cannot expose summary under a different requ
     equal(rejected.reason, "same_town"); equal(rejected.preview, nil)
     equal(gui:get().request.preview.requestId, 1); equal(rejected.requestId, 2)
     local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
-    equal(#find(tree, "ComboBox"), 2); equal(logCount("UI_ERROR"), 0)
+    equal(#planningCombos(tree), 2); equal(logCount("UI_ERROR"), 0)
 end)
 
 -- Phase 5B.1: reuse the real owner, registration, read adapters and restricted React harness.
@@ -1427,9 +1442,9 @@ local function networkFixture(count)
     api.engine.system.streetSystem = {getNode2TrackEdgeMap = function() return native.trackMap end}
     return native
 end
-local function analyze(gui, event)
+local function analyze(gui, event, mode)
     local s = gui:get()
-    return event("analyzeNetwork", {world = s.world, epoch = s.epoch, requestId = s.networkRequestId + 1})
+    return event("analyzeNetwork", {world = s.world, epoch = s.epoch, requestId = s.networkRequestId + 1, mode = mode})
 end
 local function networkDone(s) return s and s.network and s.network.finished end
 local function runNetwork(count, setup)
@@ -1614,18 +1629,18 @@ test("network: UI click uses subscribed join dispatch, real result and inspectab
     local render, poll, tree, controls = mountUI()
     find(tree, "Button", "Railway Network Architect")[1].params.onClick(); tree = render()
     equal(gui:get().network, nil)
-    local combos = find(tree, "ComboBox")
+    local combos = planningCombos(tree)
     combos[1].params.onValueChange("1"); combos[2].params.onValueChange("2"); tree = render()
     local button = find(tree, "Button", "Analyze Network")[1]
     assert(button.params.meta.enabled); button.params.onClick(); button.params.onClick(); tree = render()
     equal(gui:get().networkRequestId, 1); equal(find(tree, "Button", "Plan")[1].params.meta.enabled, false)
     untilState(networkDone); poll(); tree = render()
-    combos = find(tree, "ComboBox"); equal(#combos, 3)
+    combos = planningCombos(tree); equal(#combos, 3)
     equal(combos[1].params.value, "1"); equal(combos[2].params.value, "2")
     equal(combos[3].params.value, gui:get().network.summary.links[1].id)
     local last = gui:get().network.summary.links[#gui:get().network.summary.links]
     combos[3].params.onValueChange(last.id); tree = render()
-    equal(find(tree, "ComboBox")[3].params.value, last.id)
+    equal(planningCombos(tree)[3].params.value, last.id)
     equal(heightReads, 0); equal(logCount("START world="), 1)
     assert(controls.events[#controls.events].name:find("status", 1, true))
 end)
@@ -1634,26 +1649,26 @@ test("network: refresh, transport failure and close/reopen do not restore stale 
     local gui, _, _, event = runNetwork(3)
     local render, poll, tree, controls = mountUI()
     find(tree, "Button", "Railway Network Architect")[1].params.onClick(); tree = render()
-    equal(#find(tree, "ComboBox"), 3)
+    equal(#planningCombos(tree), 3)
     controls.resultFilter = function() return nil end; poll(); tree = render()
-    equal(#find(tree, "ComboBox"), 2)
+    equal(#planningCombos(tree), 2)
     controls.resultFilter = nil
     find(tree, "Button", "Refresh towns")[1].params.onClick(); tree = render()
-    equal(gui:get().network, nil); equal(#find(tree, "ComboBox"), 2)
+    equal(gui:get().network, nil); equal(#planningCombos(tree), 2)
     controls.panel.params.onClose(); tree = render()
     find(tree, "Button", "Railway Network Architect")[1].params.onClick(); tree = render()
-    equal(#find(tree, "ComboBox"), 2); equal(event("status").networkSummary, nil)
+    equal(#planningCombos(tree), 2); equal(event("status").networkSummary, nil)
 end)
 
 test("network: malformed response stops polling and stale link callbacks are ignored", function()
     local gui, _, _, event = runNetwork(3)
     local render, poll, tree, controls = mountUI()
     find(tree, "Button", "Railway Network Architect")[1].params.onClick(); tree = render()
-    local oldChoice = find(tree, "ComboBox")[3].params.onValueChange
+    local oldChoice = planningCombos(tree)[3].params.onValueChange
     controls.resultFilter = function(value) value.networkSummary = {epoch = -1}; return value end
     poll(); tree = render(); local count = #controls.events; poll(); poll()
-    equal(#controls.events, count); equal(#find(tree, "ComboBox"), 2)
-    oldChoice("1:2"); tree = render(); equal(#find(tree, "ComboBox"), 2)
+    equal(#controls.events, count); equal(#planningCombos(tree), 2)
+    oldChoice("1:2"); tree = render(); equal(#planningCombos(tree), 2)
     controls.resultFilter = nil; event("refresh")
     find(tree, "Button", "Refresh towns")[1].params.onClick(); render()
     equal(gui:get().network, nil)
@@ -1878,7 +1893,7 @@ end)
 test("handoff: UI recommendation selection, duplicate names and one click reach subscribed plan handler", function()
     local gui, _, untilState = runNetwork(4)
     local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
-    local combos = find(tree, "ComboBox")
+    local combos = planningCombos(tree)
     combos[1].params.onValueChange("3"); combos[2].params.onValueChange("2")
     combos[3].params.onValueChange("1:4"); tree = render()
     assert(panelText(tree):find("Twin [#1] -> Twin [#4]", 1, true))
@@ -1889,20 +1904,20 @@ test("handoff: UI recommendation selection, duplicate names and one click reach 
     equal(logCount("[RNA:HANDOFF:5B2] START"), 1)
     equal(controls.events[#controls.events].name, "oz_railway_network_architect.plan.plan")
     untilState(completed); poll(); tree = render()
-    equal(find(tree, "ComboBox")[1].params.value, "3"); equal(find(tree, "ComboBox")[2].params.value, "2")
+    equal(planningCombos(tree)[1].params.value, "3"); equal(planningCombos(tree)[2].params.value, "2")
     assert(panelText(tree):find("branch #1 -> #4", 1, true)); assert(panelText(tree):find("economic feasibility unverified", 1, true))
     local before = heightReads
-    find(tree, "ComboBox")[3].params.onValueChange(gui:get().request.preview.candidates[1].id)
+    planningCombos(tree)[3].params.onValueChange(gui:get().request.preview.candidates[1].id)
     render(); poll(); equal(heightReads, before)
 end)
 
 test("handoff: deferred selection, empty results and expired snapshots disable Study Corridor", function()
     local gui, _, _, event = runNetwork(5)
     local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
-    find(tree, "ComboBox")[3].params.onValueChange("1:5"); tree = render()
+    planningCombos(tree)[3].params.onValueChange("1:5"); tree = render()
     local button = find(tree, "Button", "Study Corridor")[1]
     equal(button.params.meta.enabled, false); button.params.onClick(); render(); equal(gui:get().request, nil)
-    find(tree, "ComboBox")[3].params.onValueChange("1:2"); tree = render()
+    planningCombos(tree)[3].params.onValueChange("1:2"); tree = render()
     clock = clock + 61; poll(); tree = render()
     equal(find(tree, "Button", "Study Corridor")[1].params.meta.enabled, false)
     assert(panelText(tree):find("Analyze Network again", 1, true))
@@ -2070,15 +2085,15 @@ test("worklist: UI edits keep selection, original reasons and styles while updat
     local gui, _, _, event = runNetwork(5)
     local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
     assert(panelText(tree):find("Network Plan", 1, true))
-    local combo = find(tree, "ComboBox")
+    local combo = planningCombos(tree)
     combo[1].params.onValueChange("3"); combo[2].params.onValueChange("2"); combo[3].params.onValueChange("1:4")
     tree = render(); local button = find(tree, "Button", "Exclude from plan")[1]
     assert(button.params.meta.enabled); button.params.onClick(); button.params.onClick(); tree = render()
     equal(gui:get().worklist.revision, 1); equal(gui:get().worklist.graph.excluded, 1)
     equal(find(tree, "Button", "Study Corridor")[1].params.meta.enabled, false)
     assert(panelText(tree):find("historical only", 1, true)); assert(panelText(tree):find("Residential capacity:", 1, true))
-    equal(find(tree, "ComboBox")[1].params.value, "3"); equal(find(tree, "ComboBox")[2].params.value, "2")
-    equal(find(tree, "ComboBox")[3].params.value, "1:4")
+    equal(planningCombos(tree)[1].params.value, "3"); equal(planningCombos(tree)[2].params.value, "2")
+    equal(planningCombos(tree)[3].params.value, "1:4")
     find(tree, "Button", "Mark for further study")[1].params.onClick(); tree = render()
     equal(gui:get().worklist.graph.furtherStudy, 1)
     find(tree, "Button", "Restore original recommendation")[1].params.onClick(); tree = render()
@@ -2086,7 +2101,7 @@ test("worklist: UI edits keep selection, original reasons and styles while updat
     equal(gui:get().worklist.graph.overrides, 0); equal(heightReads, 0)
     equal(controls.events[#controls.events].name, "oz_railway_network_architect.plan.plan")
     equal(controls.panel.params.initialX, 0.5); equal(controls.panel.params.initialY, 0.5)
-    find(tree, "ComboBox")[3].params.onValueChange("1:5"); tree = render()
+    planningCombos(tree)[3].params.onValueChange("1:5"); tree = render()
     equal(find(tree, "Button", "Include in plan")[1].params.meta.enabled, false)
 end)
 
@@ -2376,7 +2391,7 @@ test("batch: UI explicit start, duplicate clicks, progress, cancel and existing 
     local gui, step, _, event = runNetwork(4)
     local render, poll, tree, controls = mountUI(); controls.launcher.params.onClick(); tree = render()
     equal(find(tree, "Button", "Study Marked Corridors")[1].params.meta.enabled, false)
-    local combos = find(tree, "ComboBox"); combos[1].params.onValueChange("3"); combos[2].params.onValueChange("2")
+    local combos = planningCombos(tree); combos[1].params.onValueChange("3"); combos[2].params.onValueChange("2")
     find(tree, "Button", "Mark for further study")[1].params.onClick(); tree = render()
     equal(gui:get().batch, nil); equal(heightReads, 0)
     local start = find(tree, "Button", "Study Marked Corridors")[1]
@@ -2389,7 +2404,7 @@ test("batch: UI explicit start, duplicate clicks, progress, cancel and existing 
     step(); poll(); tree = render(); assert(panelText(tree):find("Current: 1:2", 1, true))
     find(tree, "Button", "Cancel Batch")[1].params.onClick(); tree = render()
     assert(panelText(tree):find("cancelled", 1, true)); assert(panelText(tree):find("Construction feasibility: unverified", 1, true))
-    equal(find(tree, "ComboBox")[1].params.value, "3"); equal(find(tree, "ComboBox")[2].params.value, "2")
+    equal(planningCombos(tree)[1].params.value, "3"); equal(planningCombos(tree)[2].params.value, "2")
     equal(controls.events[#controls.events].name, "oz_railway_network_architect.plan.plan")
     equal(controls.panel.params.initialX, 0.5); equal(controls.panel.params.initialY, 0.5)
 end)
@@ -2527,10 +2542,10 @@ test("geometry: selected candidate ID is honored and missing resources are not f
     c.waypoints[2].z=c.waypoints[2].z+1;s.request.result.candidates[2]=c
     s.request.preview=assert(preview.build(s))
     local render,poll,tree,controls=mountUI();controls.launcher.params.onClick();tree=render()
-    find(tree,"ComboBox")[3].params.onValueChange(c.id);tree=render()
+    planningCombos(tree)[3].params.onValueChange(c.id);tree=render()
     find(tree,"Button","Inspect Geometry")[1].params.onClick();render();untilState(inspected);poll();tree=render()
     equal(gui:get().inspection.candidateId,c.id);assert(gui:get().inspection.metrics.maxGradient>0)
-    equal(find(tree,"ComboBox")[3].params.value,c.id)
+    equal(planningCombos(tree)[3].params.value,c.id)
     assert(panelText(tree):find("Missing: track template/lanes/style",1,true))
     assert(panelText(tree):find("Native preview: BLOCKED",1,true));assert(panelText(tree):find("Construction status: unverified",1,true))
     equal(api.cmd,nil);equal(gui:get().inspection.proposal,nil)
@@ -2663,6 +2678,242 @@ test("geometry: unreachable incomplete or missing candidates cannot be inspected
     end
     local gui,step,untilState,event=completedSession()
     equal(event("plan",inspectionToken(gui,"absent")).reason,"candidate_not_available")
+end)
+
+-- Targeted native-acceptance policy fix: modes affect only the live capacity preference.
+local networkData = ug_require "oz_railway_network_architect::/network_live_data.lua"
+local networkCore = ug_require "oz_railway_network_architect::/planning/network_planner.lua"
+local networkSchema = ug_require "oz_railway_network_architect::/planning/network_input.lua"
+local networkRequest = ug_require "oz_railway_network_architect::/network_live_request.lua"
+local function acceptanceInput(mode)
+    local accepted, capacity = networkData.analysisMode(mode); assert(accepted)
+    return {unit="world_units", snapshotId="synthetic-acceptance", source="synthetic XY anchors, not native geography",
+        preferences={maxTowns=32,maxPairs=496,minCapacity=capacity}, towns={
+            {id=30562,name="Winterton",x=0,y=0,z=-2,
+                residentialCapacity={value=125,source="synthetic fixture reproducing owner-reported capacity",basis="synthetic"}},
+            {id=30563,name="Southwold",x=5877,y=0,z=-2,
+                residentialCapacity={value=110,source="synthetic fixture reproducing owner-reported capacity",basis="synthetic"}},
+        }}
+end
+local function acceptanceSession(mode)
+    local gui,step,untilState,event,callbacks=newSession();networkFixture(0)
+    entities={
+        [30562]={id=30562,name="Winterton",x=0,y=0,z=-2,capacity=125},
+        [30563]={id=30563,name="Southwold",x=5877,y=0,z=-2,capacity=110},
+    }
+    ids={30562,30563};ready(step,untilState)
+    assert(analyze(gui,event,mode).accepted);untilState(networkDone)
+    return gui,step,untilState,event,callbacks
+end
+
+test("network modes: strict allowlist and omitted-mode compatibility at collector boundary",function()
+    local gui,step,untilState,event=newSession();ready(step,untilState)
+    for _,example in ipairs({{"standard",200},{"exploratory",100}}) do
+        local mode,capacity=networkData.analysisMode(example[1]);equal(mode,example[1]);equal(capacity,example[2])
+    end
+    local mode,capacity=networkData.analysisMode(nil);equal(mode,"standard");equal(capacity,200)
+    for _,invalid in ipairs({"", "Standard", "EXPLORATORY", " standard", "exploratory ", "unknown", 0, 100, true, false, {}, function() end}) do
+        local r,why=networkRequest.start({id=99,tick=10},1,1,invalid)
+        equal(r,nil);equal(why,"invalid_analysis_mode")
+    end
+    equal(logCount("[RNA:NETWORK:5B1] request="),0);equal(heightReads,0)
+end)
+
+test("network modes: synthetic 125/110 capacity pair changes gate only and keeps independent score formula",function()
+    local standard=acceptanceInput("standard");local before=serialize(standard)
+    local s=networkCore.plan(standard);equal(serialize(standard),before)
+    equal(#s.recommendations,0);equal(s.decisions[1].status,"deferred")
+    equal(s.decisions[1].reasons[1],"capacity_proxy_too_small_without_demand_evidence");equal(s.decisions[1].score,nil)
+    local raw=acceptanceInput("exploratory");before=serialize(raw)
+    local e=networkCore.plan(raw);equal(serialize(raw),before)
+    local edge=e.decisions[1];equal(edge.reasons[1],"capacity_proxy_justifies_conditional_study")
+    equal(edge.distance,5877);equal(edge.evidence.demandSupport,nil)
+    local expectedSupport=0.5+0.5*110/1000
+    local expectedDistance=5877/20000*0.25
+    local expectedGeography=0.2*0.5
+    assert(math.abs(edge.score.support-expectedSupport)<1e-12)
+    assert(math.abs(edge.score.distancePenalty-expectedDistance)<1e-12)
+    assert(math.abs(edge.score.geographyPenalty-expectedGeography)<1e-12)
+    assert(math.abs(edge.score.total-0.3815375)<1e-12)
+    equal(#e.recommendations,1);equal(edge.constructionStatus,"unverified")
+    -- An eligible score does not override graph constraints, even in this fixture.
+    raw.preferences.maxEdges=0
+    local limited=networkCore.plan(raw);equal(#limited.recommendations,0)
+    equal(limited.decisions[1].reasons[#limited.decisions[1].reasons],"selected_edge_budget")
+    equal(limited.decisions[1].score.total,edge.score.total)
+end)
+
+test("network modes: all other normalized preferences and global topology defaults are unchanged",function()
+    local s=networkSchema.validate(acceptanceInput("standard")).preferences
+    local e=networkSchema.validate(acceptanceInput("exploratory")).preferences
+    equal(s.minCapacity,200);equal(e.minCapacity,100)
+    for k,v in pairs(s) do if k~="minCapacity" then equal(e[k],v) end end
+    equal(e.majorCapacity,1000);equal(e.minDistance,1000);equal(e.maxDistance,20000);equal(e.minScore,0.25)
+    equal(e.distanceWeight,0.25);equal(e.geographyWeight,0.5);equal(e.maxDegree,3)
+    e.minCapacity=1 -- caller-owned copies must not mutate the contract or pure defaults.
+    local input=acceptanceInput("exploratory");input.preferences=nil
+    equal(networkSchema.validate(input).preferences.minCapacity,200)
+    local _,capacity=networkData.analysisMode("exploratory");equal(capacity,100)
+end)
+
+test("network modes: live default and explicit modes populate accepted snapshot result and summary",function()
+    for _,mode in ipairs({"omitted","standard","exploratory"}) do
+        local gui,step,untilState,event=acceptanceSession(mode~="omitted" and mode or nil)
+        local r=gui:get().network;local expected=mode=="exploratory" and 100 or 200
+        equal(r.analysisMode,mode=="omitted" and "standard" or mode);equal(r.minCapacity,expected)
+        equal(r.snapshot.analysisMode,r.analysisMode);equal(r.snapshot.minCapacity,expected)
+        equal(r.result.analysisMode,r.analysisMode);equal(r.result.preferences.minCapacity,expected)
+        equal(r.summary.analysisMode,r.analysisMode);equal(r.summary.minCapacity,expected)
+        local lines=table.concat(r.summary.lines,"\n")
+        assert(lines:find("Minimum residential capacity: "..expected,1,true))
+        assert(lines:find("Passenger demand: unknown",1,true));assert(lines:find("Economic feasibility: unverified",1,true))
+        assert(networkData.valid(r.summary,event("status")))
+        equal(#r.result.recommendations,mode=="exploratory" and 1 or 0)
+        equal(r.result.stats.astarSearches,0);equal(heightReads,0);equal(api.cmd,nil)
+        assert(hasLog("mode="..r.analysisMode.." min_capacity="..expected))
+    end
+end)
+
+test("network modes: invalid requests preserve result worklist batch identity and request token",function()
+    local gui,step,untilState,event=runNetwork(4)
+    mark(gui,event,"1:4");assert(startBatch(gui,event).accepted);untilState(batchDone)
+    assert(editNetwork(gui,event,"exclude","1:2").accepted)
+    local s=gui:get();local original=serialize({s.network,s.worklist,s.batch})
+    for _,mode in ipairs({false,true,{},100,"", "Standard","unknown"," exploratory"}) do
+        equal(analyze(gui,event,mode).reason,"invalid_analysis_mode")
+        equal(gui:get().networkRequestId,1);equal(serialize({s.network,s.worklist,s.batch}),original)
+    end
+    local token={world=s.world,epoch=s.epoch,requestId=2,mode="exploratory",preferences={minCapacity=0,majorCapacity=1}}
+    assert(event("analyzeNetwork",token).accepted);equal(event("analyzeNetwork",token).reason,"busy")
+    untilState(networkDone);equal(gui:get().network.result.preferences.minCapacity,100)
+    equal(gui:get().network.result.preferences.majorCapacity,1000)
+    equal(event("analyzeNetwork",token).reason,"duplicate_or_stale_network_request")
+end)
+
+test("network modes: selector is explicit local state and cannot mutate completed analysis or edits",function()
+    local gui,step,untilState,event=runNetwork(4);assert(editNetwork(gui,event,"exclude","1:2").accepted)
+    local original=serialize({gui:get().network,gui:get().worklist})
+    local render,poll,tree,controls=mountUI();controls.launcher.params.onClick();tree=render()
+    local combo=assert(modeCombo(tree));equal(combo.params.value,"standard");equal(#combo.params.items,2)
+    equal(combo.params.items[1].params.value,"standard");equal(combo.params.items[2].params.value,"exploratory")
+    assert(combo.params.items[1].params.content.params.text:find("capacity threshold 200",1,true))
+    assert(combo.params.items[2].params.content.params.text:find("capacity threshold 100",1,true))
+    local events=#controls.events;local starts=logCount("START world=")
+    planner.plan=function() error("mode selection invoked A*") end;planner.step=planner.plan
+    combo.params.onValueChange("exploratory");tree=render()
+    equal(#controls.events,events);equal(logCount("START world="),starts);equal(heightReads,0)
+    equal(gui:get().networkRequestId,1);equal(serialize({gui:get().network,gui:get().worklist}),original)
+    equal(modeCombo(tree).params.value,"exploratory")
+    assert(panelText(tree):find("Network analysis mode: Standard",1,true))
+    assert(panelText(tree):find("Minimum residential capacity: 200",1,true))
+    local click=find(tree,"Button","Analyze Network")[1].params.onClick
+    click();click();tree=render();equal(gui:get().networkRequestId,2)
+    equal(gui:get().network.analysisMode,"exploratory");equal(gui:get().worklist,nil)
+    equal(controls.events[#controls.events].request.mode,"exploratory")
+    equal(modeCombo(tree).params.meta.enabled,false)
+    combo.params.onValueChange("standard");tree=render();equal(modeCombo(tree).params.value,"exploratory")
+    untilState(networkDone);poll();tree=render()
+    assert(panelText(tree):find("Network analysis mode: Exploratory",1,true))
+    modeCombo(tree).params.onValueChange("standard");tree=render()
+    assert(panelText(tree):find("Network analysis mode: Exploratory",1,true))
+    assert(panelText(tree):find("Minimum residential capacity: 100",1,true));equal(heightReads,0)
+end)
+
+test("network modes: default UI and close reopen reset lifecycle never analyze automatically",function()
+    local gui,step,untilState,event=newSession();networkFixture(4);ready(step,untilState)
+    local render,poll,tree,controls=mountUI();controls.launcher.params.onClick();tree=render()
+    equal(modeCombo(tree).params.value,"standard")
+    local old=modeCombo(tree).params.onValueChange
+    old("exploratory");tree=render();equal(gui:get().network,nil)
+    modeCombo(tree).params.onValueChange("invalid");tree=render();equal(modeCombo(tree).params.value,"exploratory")
+    controls.panel.params.onClose();render();old("standard")
+    controls.launcher.params.onClick();tree=render();equal(modeCombo(tree).params.value,"exploratory")
+    local stale=modeCombo(tree).params.onValueChange
+    worldId=100;step();poll();tree=render();stale("exploratory");tree=render()
+    equal(modeCombo(tree).params.value,"standard");equal(gui:get().network,nil);equal(heightReads,0)
+    equal(logCount("[RNA:NETWORK:5B1] request="),0)
+end)
+
+test("network modes: reanalysis replaces snapshot and rejects old worklist handoff and batch tokens",function()
+    local gui,step,untilState,event=runNetwork(4)
+    mark(gui,event,"1:4");assert(startBatch(gui,event).accepted);untilState(batchDone)
+    assert(editNetwork(gui,event,"exclude","1:2").accepted)
+    local old=gui:get().network;local edit=editToken(gui,"restore","1:2")
+    local handoffToken=studyToken(gui,"1:4");local batchClick=batchToken(gui)
+    assert(analyze(gui,event,"exploratory").accepted)
+    equal(gui:get().worklist,nil);equal(gui:get().batch,nil);equal(gui:get().network.result,nil)
+    untilState(networkDone)
+    local s=gui:get();assert(s.network.result.snapshotId~=old.result.snapshotId)
+    equal(s.networkRequestId,2);equal(s.worklist.snapshotId,s.network.result.snapshotId)
+    equal(s.worklist.revision,0);equal(next(s.worklist.overrides),nil);equal(old.result.analysisMode,"standard")
+    equal(event("plan",edit).reason,"stale_worklist_snapshot")
+    equal(event("plan",handoffToken).accepted,false);equal(event("plan",batchClick).reason,"stale_worklist_snapshot")
+end)
+
+test("network modes: exploratory exclusion individual study and sequential batch preserve safeguards",function()
+    local gui,step,untilState,event=runNetwork(4)
+    assert(analyze(gui,event,"exploratory").accepted);untilState(networkDone)
+    local original=serialize(gui:get().network.result)
+    assert(editNetwork(gui,event,"exclude","1:4").accepted)
+    equal(study(gui,event,"1:4").reason,"connection_excluded_from_network_plan");equal(heightReads,0)
+    assert(editNetwork(gui,event,"restore","1:4").accepted)
+    assert(study(gui,event,"1:4").accepted);untilState(completed)
+    equal(gui:get().request.sourceId,1);equal(gui:get().request.destinationId,4)
+    equal(gui:get().request.networkOrigin.snapshotId,gui:get().network.result.snapshotId)
+    mark(gui,event,"1:2","1:4");assert(startBatch(gui,event).accepted);untilState(batchDone)
+    equal(gui:get().batch.succeeded,2);equal(#gui:get().batch.results,2)
+    equal(serialize(gui:get().network.result),original)
+    assert(submit(gui,event,4,1).accepted);untilState(completed);equal(gui:get().request.networkOrigin,nil)
+end)
+
+test("network modes: exploratory handoff and next batch study retain original 60 second deadline",function()
+    local gui,step,untilState,event=runNetwork(4)
+    assert(analyze(gui,event,"exploratory").accepted);untilState(networkDone)
+    mark(gui,event,"1:2","1:4");assert(startBatch(gui,event).accepted)
+    untilState(function(s) return s.batch and #s.batch.results==1 end)
+    clock=gui:get().network.began+61;step()
+    equal(gui:get().batch.status,"stopped");equal(#gui:get().batch.results,1)
+    assert(gui:get().batch.reason:find("network_snapshot_expired",1,true))
+    local reads=heightReads;local why=study(gui,event,"1:4")
+    equal(why.accepted,false);assert(why.reason:find("network_snapshot_expired",1,true))
+    equal(heightReads,reads);equal(gui:get().networkRequestId,2);equal(gui:get().worklist.graph.furtherStudy,2)
+end)
+
+test("network modes: small-capacity acceptance pair can explicitly enter long individual and batch studies",function()
+    local gui,step,untilState,event=acceptanceSession("exploratory")
+    assert(study(gui,event,"30562:30563").accepted);untilState(completed)
+    local r=gui:get().request;equal(r.status,"ok");assert(hasLog("LONG_DISTANCE mode=hierarchical"))
+    equal(r.sourceId,30562);equal(r.destinationId,30563)
+    equal(r.networkOrigin.evidence.residentialCapacitySource.value,125)
+    equal(r.networkOrigin.evidence.residentialCapacityDestination.value,110)
+    equal(r.networkOrigin.evidence.demandSupport,nil)
+    mark(gui,event,"30562:30563");assert(startBatch(gui,event).accepted);untilState(batchDone)
+    equal(gui:get().batch.succeeded,1);equal(gui:get().batch.results[1].constructionStatus,"unverified")
+end)
+
+test("network modes: unknown demand capacities and physical rail screening stay unchanged",function()
+    local gui,step,untilState,event=acceptanceSession("exploratory")
+    entities[30563].capacity=nil;assert(analyze(gui,event,"exploratory").accepted);untilState(networkDone)
+    equal(#gui:get().network.result.recommendations,0)
+    equal(gui:get().network.result.decisions[1].reasons[1],"insufficient_evidence_not_zero_demand")
+    local raw=acceptanceInput("exploratory")
+    raw.rail={source="synthetic physical component",basis="synthetic",
+        nodes={{id=1,x=0,y=0},{id=2,x=5877,y=0}},segments={{id=3,node0=1,node1=2}}}
+    local r=networkCore.plan(raw);equal(#r.recommendations,0)
+    equal(r.decisions[1].reasons[1],"inspect_existing_physical_rail_before_new_corridor")
+end)
+
+test("network modes: repeated results deterministic and malformed mode summary is rejected",function()
+    local gui,step,untilState,event=acceptanceSession("exploratory")
+    local previous=serialize(gui:get().network.result.decisions)
+    assert(analyze(gui,event,"exploratory").accepted);untilState(networkDone)
+    equal(serialize(gui:get().network.result.decisions),previous)
+    local render,poll,tree,controls=mountUI();controls.launcher.params.onClick();tree=render()
+    controls.resultFilter=function(v) v.networkSummary.minCapacity=200;return v end
+    poll();tree=render();assert(panelText(tree):find("invalid network summary",1,true))
+    local events=#controls.events;poll();equal(#controls.events,events)
+    controls.resultFilter=nil;find(tree,"Button","Refresh towns")[1].params.onClick();render()
+    equal(gui:get().network,nil)
 end)
 
 print("PASS " .. passed .. " live planning/UI tests (mocked engine and React, not TF3 runtime verification)")

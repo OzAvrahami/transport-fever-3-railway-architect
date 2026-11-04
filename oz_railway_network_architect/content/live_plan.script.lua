@@ -339,10 +339,13 @@ function data()
                         reason = "duplicate_or_stale_network_request"; return
                     end
                     if not state.ready or state.catalog then reason = "not_ready"; return end
+                    local started
+                    started, reason = network.start({id = state.world, tick = state.tick}, state.epoch, param.requestId, param.mode)
+                    if not started then return end -- Invalid mode cannot replace a result or consume its request ID.
                     state.worklist, state.worklistError, state.batch = nil, nil, nil
                     state.inspection = nil
                     state.networkRequestId = param.requestId
-                    state.network = network.start({id = state.world, tick = state.tick}, state.epoch, param.requestId)
+                    state.network = started
                     accepted = true; return
                 end
                 if not flow.id(param.requestId) or param.requestId ~= state.requestId + 1 then reason = "duplicate_or_stale_request"; return end

@@ -1,5 +1,21 @@
 # Railway Network Architect
 
+**Native acceptance fix: configurable network analysis modes (awaiting review/retest).**
+
+Choose **Standard — capacity threshold 200** (default) or **Exploratory — capacity
+threshold 100**, then explicitly click **Analyze Network**. Changing the selector
+does not change the existing result or worklist. Completed results show the actual
+accepted mode and threshold; all other topology preferences and the 60-second study
+freshness limit remain unchanged. Residential capacity is not passenger demand;
+recommendations do not establish economic or construction feasibility.
+
+**341 automated tests pass; 54 Lua files pass syntax checks.** The owner reports that
+the first consolidated native test successfully loaded RNA, collected inventories,
+planned a manual corridor and inspected its geometry. The inspected 125/110-capacity
+pair failed the original 200-capacity gate; the reasons for the other pairs remain
+unestablished. See the [targeted fix report and native retest](docs/native_acceptance_network_modes_fix.md).
+No new milestone, staging deployment, commits or pushes are included in this fix.
+
 **Phase 6D: geometry inspection and consolidated native acceptance readiness.**
 
 After a successful manual Plan or individual Study Corridor, select a completed

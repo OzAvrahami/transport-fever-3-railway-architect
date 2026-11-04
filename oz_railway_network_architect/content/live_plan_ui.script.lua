@@ -27,6 +27,9 @@ local PlannerWindow = react.RegisterWrapperRecipe("OzRailwayNetworkArchitectWind
         local candidateRef = react.useRef("")
         local networkLink = react.useState("")
         local networkLinkRef = react.useRef("")
+        local initialMode = networkData.analysisMode(saved.analysisMode) or "standard"
+        local analysisMode = react.useState(initialMode)
+        local analysisModeRef = react.useRef(initialMode)
 
         local function isLive()
             return not view:hasExpired() and alive:get() and params.isCurrent()
@@ -87,6 +90,9 @@ local PlannerWindow = react.RegisterWrapperRecipe("OzRailwayNetworkArchitectWind
                 end
             end
             local old = current:get()
+            if old and (old.world ~= value.world or old.epoch ~= value.epoch) then
+                analysisModeRef:set("standard"); analysisMode:set("standard")
+            end
             local linkId = networkLinkRef:get()
             if not old or old.world ~= value.world or old.epoch ~= value.epoch
                 or old.networkRequestId ~= value.networkRequestId or not networkData.find(value.networkSummary, linkId) then
@@ -113,7 +119,7 @@ local PlannerWindow = react.RegisterWrapperRecipe("OzRailwayNetworkArchitectWind
                 errorState:set("")
             end
             current:set(value); view:set(value)
-            params.form:set({current = value, selected = selected:get()})
+            params.form:set({current = value, selected = selected:get(), analysisMode = analysisModeRef:get()})
         end
         local function send(name, request)
             if not isLive() or sending:get() or (name == "status" and transportFailed:get()) then return end
@@ -189,7 +195,7 @@ local PlannerWindow = react.RegisterWrapperRecipe("OzRailwayNetworkArchitectWind
                     end
                     nextValue[role] = value
                     selected:set(nextValue); selection:set(nextValue); errorState:set("")
-                    params.form:set({current = current:get(), selected = nextValue})
+                    params.form:set({current = current:get(), selected = nextValue, analysisMode = analysisModeRef:get()})
                 end,
             }
         end
@@ -221,6 +227,24 @@ local PlannerWindow = react.RegisterWrapperRecipe("OzRailwayNetworkArchitectWind
                 errorState:set(""); previewConfirmed:set(false); send("refresh", {})
             end,
         }
+        children[#children + 1] = text("Mode for next network analysis (click Analyze Network to apply)")
+        children[#children + 1] = builtin.ComboBox {
+            meta = {class = "rna-planner-town", enabled = state.canAnalyze == true and not state.busy and not transportFailed:get()},
+            value = analysisMode:old(),
+            items = {
+                builtin.ComboBoxItem {value = "standard", content = text("Standard — capacity threshold 200")},
+                builtin.ComboBoxItem {value = "exploratory", content = text("Exploratory — capacity threshold 100")},
+            },
+            onValueChange = function(value)
+                if not isLive() or sending:get() or transportFailed:get() then return end
+                local latest = current:get()
+                if not latest or latest.busy or not latest.canAnalyze
+                    or latest.world ~= state.world or latest.epoch ~= state.epoch then return end
+                if value == nil or not networkData.analysisMode(value) then errorState:set("Invalid analysis mode."); return end
+                analysisModeRef:set(value); analysisMode:set(value)
+                params.form:set({current = latest, selected = selected:get(), analysisMode = value})
+            end,
+        }
         children[#children + 1] = builtin.Button {
             content = text("Analyze Network"),
             meta = {enabled = state.canAnalyze == true and not state.busy and not transportFailed:get()},
@@ -229,7 +253,8 @@ local PlannerWindow = react.RegisterWrapperRecipe("OzRailwayNetworkArchitectWind
                 local snapshot = current:get()
                 if not snapshot or snapshot.busy or not snapshot.canAnalyze then return end
                 errorState:set(""); previewConfirmed:set(false)
-                send("analyzeNetwork", {world = snapshot.world, epoch = snapshot.epoch, requestId = snapshot.networkRequestId + 1})
+                send("analyzeNetwork", {world = snapshot.world, epoch = snapshot.epoch,
+                    requestId = snapshot.networkRequestId + 1, mode = analysisModeRef:get()})
             end,
         }
         children[#children + 1] = text("Status: " .. state.status .. " | Towns: " .. #state.towns)

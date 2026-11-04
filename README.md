@@ -1,17 +1,20 @@
 # Railway Network Architect
 
-**Phase 6A: railway geometry foundation (offline only, awaiting review).**
+**Phase 6B: track geometry compatibility foundation (offline only, awaiting review).**
 
-Audited official TF3 documentation, installed definitions and shipped track builders.
-The new pure-Lua `content/geometry/rail_curve.lua` produces bounded cubic Hermite
-endpoint/tangent candidates and sampled gradient/curvature diagnostics. It is not
-loaded by any live game script and creates no native proposals. Optional engineering
-thresholds are caller assumptions; candidate curves are not validated railway geometry.
+The new pure-Lua `content/geometry/track_geometry_dto.lua` copies Phase 6A curves into
+an explicitly intermediate DTO. It validates endpoint/tangent continuity, recomputes
+sampled diagnostics, reports curvature/gradient-rate jumps and preserves provenance.
+Installed TF3 sources support endpoint/tangent field correspondence, but do not yet
+establish complete native interpolation or proposal-processing compatibility. This is
+not a native Proposal. Templates, terrain, collisions and engine acceptance remain
+unverified. No live script loads the adapter; optional limits remain caller assumptions.
 
-**267 automated tests pass**, including 20 independent geometry regressions; 49 Lua
+**290 automated tests pass**, including 20 geometry and 23 DTO regressions; 51 Lua
 files pass syntax checks. Existing planners, inventories, events, UI and limits are
-unchanged. See the [Phase 6A source audit, mathematical contract, prototype, validation
-limitations and Phase 6B recommendation](docs/phase_6a_rail_geometry.md).
+unchanged, as is the Phase 6A fitter. See the [Phase 6B contract audit, DTO contract,
+validation results and Phase 6C gate](docs/phase_6b_track_proposal_contract.md) and the
+[Phase 6A mathematical foundation](docs/phase_6a_rail_geometry.md).
 No construction commands, proposal-validation calls, staging deployment, commits, tags or pushes.
 
 **Phase 5C.2 background: reviewed batch corridor studies; native verification pending.**

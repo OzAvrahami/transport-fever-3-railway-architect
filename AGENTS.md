@@ -2,13 +2,13 @@
 
 ## Current milestone
 
-Phase 6A only: source audit and isolated offline railway geometry candidates.
+Phase 6B only: native contract audit and isolated intermediate track geometry DTO.
 No native proposal creation/evaluation or construction command execution. Preserve the original
 topology result and individual handoff, accepted local work, window styling, subscriptions, inventories
 and corridor algorithms. No automatic network analysis or all-pairs terrain A*.
 World-space rendering remains unresolved; the panel is NOT a map overlay.
 No staging deployment, construction, speculative APIs, commits, tags or pushes.
-Stop after Phase 6A for code review. Newer live features still await native acceptance.
+Stop after Phase 6B for code review. Newer live features still await native acceptance.
 The authoritative planner remains content/planning/ inside the mod.
 
 Topology studies consider supplied demand evidence, distance, geography and transport
@@ -17,6 +17,19 @@ and actual construction remain unverified; scores are explicit planning preferen
 
 ## Development conventions
 
+- Phase 6B adapter lives in content/geometry/track_geometry_dto.lua. It is NOT a
+  SimpleProposal or processed Proposal, and no live code imports it. Preserve all
+  endpoint/tangent values and source indices; DTO node indices are not entity IDs.
+- Require explicit world-frame provenance; keep caller resource references separate
+  from resolved native templates. Never invent lanes, entity IDs, electrification
+  fields, bridge/tunnel indices or engine acceptance. No native objects are created.
+- DTO joins require exact C0/C1; never silently weld gaps or rescale tangents. Its
+  forward-chord derivative guard is a conservative offline policy, not a TF3 rule.
+  Report curvature and gradient-rate jumps: C1 preserves grade, not C2 continuity.
+- Cap the DTO at 255 segments, 256 nodes, 254 join reports and 64 diagnostic intervals
+  per segment. Provenance copying is bounded and rejects cycles/overflow, never truncates.
+- Preserve diagnostic violations, report prerequisites, and keep mathematical checks,
+  vector-field correspondence and native validation as distinct evidence levels.
 - Geometry prototype lives in content/geometry/rail_curve.lua, with no live imports
   or TF3 dependencies. Input is an explicit metre-unit XYZ projection; preserve the
   original corridor, water/obstacle provenance and endpoint approximations outside it.
@@ -31,7 +44,7 @@ and actual construction remain unverified; scores are explicit planning preferen
   bridges/tunnels, stations and connections require future independent assessment.
 - Do not equate construction edgeLists, SimpleProposal and processed Proposal.
   makeProposalData accepts Proposal, not a documented SimpleProposal overload.
-  Phase 6A must not execute it, create WorldBuildProposal commands or send commands.
+  Phase 6B must not execute it, create WorldBuildProposal commands or send commands.
 - Batch coordination lives in network_batch.lua, in the existing GUI owner only.
   Reuse the plan event with a separate batch envelope/token; no extra subscription.
   Start only on Study Marked Corridors. Marking/editing never triggers a search.

@@ -5,6 +5,7 @@ local flow = ug_require "oz_railway_network_architect::/live_plan_data.lua"
 local preview = ug_require "oz_railway_network_architect::/live_plan_preview.lua"
 local networkData = ug_require "oz_railway_network_architect::/network_live_data.lua"
 local worklist = ug_require "oz_railway_network_architect::/network_worklist.lua"
+local geometry = ug_require "oz_railway_network_architect::/live_plan_geometry.lua"
 local eventId = "oz_railway_network_architect.plan"
 
 -- Native window content is instantiated by the game's window container, never in
@@ -95,9 +96,13 @@ local PlannerWindow = react.RegisterWrapperRecipe("OzRailwayNetworkArchitectWind
             if value.preview ~= nil and not preview.valid(value.preview, value) then
                 error("api.gui.fireGuiScriptEvent: invalid corridor summary", 0)
             end
+            if value.inspection ~= nil and not geometry.valid(value.inspection, value) then
+                error("api.gui.fireGuiScriptEvent: invalid geometry inspection", 0)
+            end
             local selectedCandidate = candidateRef:get()
             if not old or old.epoch ~= value.epoch or old.world ~= value.world or old.requestId ~= value.requestId
-                or not preview.find(value.preview, selectedCandidate) then
+                or (value.preview and not preview.find(value.preview, selectedCandidate))
+                or (not value.preview and not value.inspection) then
                 selectedCandidate = value.preview and value.preview.candidates[1].id or ""
             end
             candidateRef:set(selectedCandidate); candidate:set(selectedCandidate)
@@ -255,6 +260,27 @@ local PlannerWindow = react.RegisterWrapperRecipe("OzRailwayNetworkArchitectWind
             }
         end
         for _, line in ipairs(preview.lines(summary, candidate:old())) do children[#children + 1] = text(line) end
+        children[#children + 1] = builtin.Button {
+            content = text("Inspect Geometry"),
+            meta = {enabled = summary ~= nil and not state.busy and not transportFailed:get()
+                and preview.find(summary, candidate:old()) ~= nil},
+            onClick = function()
+                if not isLive() or sending:get() or transportFailed:get() or not previewConfirmed:old() then return end
+                local latest, id = current:get(), candidateRef:get()
+                if not latest or latest.busy or latest.world ~= state.world or latest.epoch ~= state.epoch
+                    or latest.requestId ~= state.requestId or latest.inspectionRequestId ~= state.inspectionRequestId
+                    or not preview.find(latest.preview, id) then return end
+                errorState:set(""); previewConfirmed:set(false)
+                send("plan", {world=latest.world, epoch=latest.epoch,
+                    inspection={requestId=(latest.inspectionRequestId or 0)+1, corridorRequestId=latest.requestId, candidateId=id}})
+            end,
+        }
+        local inspected = previewConfirmed:old() and not transportFailed:get() and state.inspection or nil
+        if inspected then
+            for _, line in ipairs(inspected.lines) do children[#children + 1] = text(line) end
+        else
+            children[#children + 1] = text("No geometry inspection requested. Select a completed corridor candidate. Native preview: BLOCKED. Construction status: unverified.")
+        end
         children[#children + 1] = text("Network: " .. (state.networkStatus or "idle") .. " | "
             .. (state.networkMessage or "No network analysis requested."))
         local networkSummary = previewConfirmed:old() and not transportFailed:get() and state.networkSummary or nil

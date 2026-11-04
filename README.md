@@ -1,6 +1,26 @@
 # Railway Network Architect
 
-**Phase 6C: offline railway proposal assembly (awaiting review).**
+**Phase 6D: geometry inspection and consolidated native acceptance readiness.**
+
+After a successful manual Plan or individual Study Corridor, select a completed
+candidate and click **Inspect Geometry**. The existing GUI owner performs bounded
+pure-Lua fitting and DTO checks, then displays continuity and sampled gradient/curvature
+diagnostics. It neither reruns A* nor changes the original route. More than 256 points
+or incompatible geometry produces an explicit unsupported result; there is no truncation.
+Batch summaries do not retain inspectable waypoint arrays.
+
+**Native preview: BLOCKED. Construction status: unverified.** The final source review
+does not establish supported mod-owned ProposalViewer activation, non-mutation or native
+cleanup guarantees. No viewer or proposal processing is activated. Missing templates,
+ownership, bridge/tunnel decisions and collision/terrain assessment remain missing.
+
+**328 automated tests pass; 54 Lua files pass syntax checks.** These are offline and
+mocked integration results, not native acceptance. See the [Phase 6D report, safety
+gate, complete-package staging script and consolidated acceptance checklist](docs/phase_6d_native_acceptance.md).
+Development stops here for owner review, then one consolidated TF3 acceptance test.
+No staging deployment, commits, tags, pushes, identity or revision changes were made.
+
+**Phase 6C background: offline railway proposal assembly.**
 
 The new pure-Lua `content/geometry/track_proposal_assembly.lua` revalidates Phase 6B
 geometry and produces a symbolic assembly descriptor with deterministic negative IDs,

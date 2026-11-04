@@ -6,6 +6,7 @@ local network = ug_require "oz_railway_network_architect::/network_live_request.
 local handoff = ug_require "oz_railway_network_architect::/network_corridor_handoff.lua"
 local worklist = ug_require "oz_railway_network_architect::/network_worklist.lua"
 local batch = ug_require "oz_railway_network_architect::/network_batch.lua"
+local geometry = ug_require "oz_railway_network_architect::/live_plan_geometry.lua"
 local config = flow.config()
 local eventId = "oz_railway_network_architect.plan"
 local prefix = "[RNA:PLAN:4B2] "
@@ -13,11 +14,13 @@ local function report(message) debugPrint(prefix .. message) end
 
 local function newState(previous)
     return {epoch = (previous and previous.epoch or 0) + 1, requestId = 0,
-        networkRequestId = 0, batchRequestId = 0, polls = 0, tick = nil, towns = {}, listVersion = 0, status = "waiting",
+        networkRequestId = 0, batchRequestId = 0, inspectionRequestId = 0, polls = 0, tick = nil, towns = {}, listVersion = 0, status = "waiting",
         message = "Waiting for a loaded world and tick advance; briefly unpause."}
 end
 
 local function reset(state, reason)
+    if state.inspection then debugPrint("[RNA:GEOM:6D] CLEAR reason=" .. flow.text(reason)) end
+    geometry.stop(state.inspection, "invalidated", reason)
     batch.stop(state.batch, "invalidated", reason)
     if state.network then network.invalidate(state.network, reason) end
     if state.request then request.invalidate(state.request, reason) end
@@ -39,6 +42,7 @@ local function synchronize(state)
 end
 
 local function startCatalog(state)
+    state.inspection = nil
     state.batch = nil
     state.catalog = {cursor = 1, towns = {}, rejected = 0, errors = 0}
     state.towns, state.request, state.network, state.worklist, state.worklistError = {}, nil, nil, nil, nil
@@ -82,7 +86,7 @@ local function collect(state)
 end
 
 local function busy(state)
-    return batch.running(state.batch) or (state.request ~= nil and not state.request.finished)
+    return geometry.running(state.inspection) or batch.running(state.batch) or (state.request ~= nil and not state.request.finished)
         or (state.network ~= nil and not state.network.finished)
 end
 
@@ -96,6 +100,7 @@ local function response(state, accepted, reason)
         status = state.status, message = state.message, busy = busy(state),
         networkRequestId = state.networkRequestId,
         batchRequestId = state.batchRequestId, batch = batch.summary(state.batch),
+        inspectionRequestId = state.inspectionRequestId or 0, inspection = geometry.summary(state.inspection, state),
         canAnalyze = state.ready == true and state.catalog == nil and not busy(state),
         networkStatus = state.network and state.network.status or "idle",
         networkMessage = state.network and state.network.message or "No network analysis requested.",
@@ -180,6 +185,28 @@ local function update(state)
                 .. " status=" .. (state.worklist and "ok" or flow.text(state.worklistError)))
         end
     end
+    if geometry.running(state.inspection) then
+        local job = state.inspection
+        local began = adapter.seconds()
+        if not flow.finite(began) then geometry.stop(job, "timing_unavailable", "application_clock_unavailable")
+        else
+            local worked, why = pcall(geometry.step, job, state)
+            local ended = adapter.seconds()
+            if not worked then geometry.stop(job, "error", flow.text(why))
+            elseif not flow.finite(ended) or ended < began then geometry.stop(job, "timing_unavailable", "application_clock_invalid")
+            else
+                job.maxWorkSeconds = math.max(job.maxWorkSeconds, ended - began)
+                if ended - began > config.workBudgetSeconds then geometry.stop(job, "performance_limit", "geometry_callback_budget_exceeded") end
+            end
+        end
+        state = synchronize(state)
+        if state.inspection == job and job.finished then
+            debugPrint("[RNA:GEOM:6D] COMPLETE inspection=" .. job.id .. " corridor=" .. job.corridorRequestId
+                .. " candidate=" .. job.candidateId .. " status=" .. job.status .. " reason=" .. flow.text(job.reason)
+                .. " segments=" .. (job.metrics and job.metrics.segments or 0)
+                .. " max_work_seconds=" .. flow.number(job.maxWorkSeconds) .. " timing_resolution=unverified native_preview=blocked construction=unverified")
+        end
+    end
     batch.step(state.batch, state)
     return state
 end
@@ -191,6 +218,7 @@ function data()
             if not state or not state.epoch then state = newState() end
             local ok, updated = pcall(update, state)
             if ok then state = updated else
+                geometry.stop(state.inspection, "error", "session_update_failed")
                 batch.stop(state.batch, "stopped", "session_update_failed")
                 if state.request then request.invalidate(state.request, "session_update_failed") end
                 if state.network then network.invalidate(state.network, "session_update_failed") end
@@ -245,6 +273,24 @@ function data()
             local ok, detail = pcall(function()
                 state = synchronize(state)
                 if name == "status" then return end
+                if type(param) == "table" and param.inspection ~= nil then
+                    if name ~= "plan" or param.batch ~= nil or param.worklist ~= nil or param.network ~= nil
+                        or param.requestId ~= nil or param.sourceId ~= nil or param.destinationId ~= nil then
+                        reason = "invalid_inspection_envelope"; return
+                    end
+                    if param.world ~= state.world or param.epoch ~= state.epoch then reason = "stale_session"; return end
+                    if busy(state) then reason = "busy"; return end
+                    if not state.ready or state.catalog then reason = "not_ready"; return end
+                    local job
+                    job, reason = geometry.start(state, param.inspection)
+                    if not job then return end
+                    state.inspection, state.inspectionRequestId = job, job.id
+                    debugPrint("[RNA:GEOM:6D] START inspection=" .. job.id .. " corridor=" .. job.corridorRequestId
+                        .. " candidate=" .. job.candidateId .. " status=" .. job.status)
+                    if job.finished then debugPrint("[RNA:GEOM:6D] COMPLETE inspection=" .. job.id
+                        .. " status=" .. job.status .. " reason=" .. flow.text(job.reason) .. " native_preview=blocked construction=unverified") end
+                    accepted = true; return
+                end
                 -- Cancel must be reachable while busy. All other operations retain
                 -- the common busy guard. Reuse the registered plan event only.
                 if type(param) == "table" and param.batch ~= nil then
@@ -260,7 +306,7 @@ function data()
                     if not state.ready or state.catalog then reason = "not_ready"; return end
                     local started
                     started, reason = batch.start(state, param.batch)
-                    if started then state.batch = started; accepted = true end
+                    if started then state.inspection = nil; state.batch = started; accepted = true end
                     return
                 end
                 if busy(state) then reason = "busy"; return end
@@ -282,6 +328,7 @@ function data()
                     edited, reason = worklist.edit(state.worklist, param.worklist, state.tick)
                     if not edited then return end
                     state.worklist = edited
+                    state.inspection = nil
                     debugPrint("[RNA:WORKLIST:5C1] EDIT network=" .. state.networkRequestId
                         .. " revision=" .. edited.revision .. " action=" .. param.worklist.action
                         .. " included=" .. edited.graph.included .. " components=" .. #edited.graph.components)
@@ -293,6 +340,7 @@ function data()
                     end
                     if not state.ready or state.catalog then reason = "not_ready"; return end
                     state.worklist, state.worklistError, state.batch = nil, nil, nil
+                    state.inspection = nil
                     state.networkRequestId = param.requestId
                     state.network = network.start({id = state.world, tick = state.tick}, state.epoch, param.requestId)
                     accepted = true; return
@@ -301,6 +349,7 @@ function data()
                 if not state.ready or state.catalog or (state.status == "error" and not state.request) then reason = "not_ready"; return end
                 -- Consume the click token even on validation failure; replay cannot restart work.
                 state.requestId = param.requestId
+                state.inspection = nil
                 local sourceId, destinationId, origin = param.sourceId, param.destinationId, nil
                 if param.network ~= nil then
                     origin, reason = handoff.prepare(state, param.network)

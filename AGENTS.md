@@ -2,13 +2,15 @@
 
 ## Current milestone
 
-Phase 6C only: offline symbolic proposal assembly and native preview contract research.
+Phase 6D only: explicit read-only geometry inspection and consolidated native acceptance readiness.
 No native proposal creation/evaluation or construction command execution. Preserve the original
 topology result and individual handoff, accepted local work, window styling, subscriptions, inventories
 and corridor algorithms. No automatic network analysis or all-pairs terrain A*.
 World-space rendering remains unresolved; the panel is NOT a map overlay.
 No staging deployment, construction, speculative APIs, commits, tags or pushes.
-Stop after Phase 6C for code review. Newer live features still await native acceptance.
+FINAL DEVELOPMENT STOP after Phase 6D for owner review. Do not begin Phase 6E or
+another feature milestone. Next is one consolidated native acceptance test after owner
+approval of installation; no automatic staging. Newer live features still await acceptance.
 The authoritative planner remains content/planning/ inside the mod.
 
 Topology studies consider supplied demand evidence, distance, geography and transport
@@ -17,6 +19,21 @@ and actual construction remain unverified; scores are explicit planning preferen
 
 ## Development conventions
 
+- Geometry inspection is owned by the existing planning GUI state in live_plan_geometry.lua.
+  Use the existing plan event with a separate inspection token and current corridor ID.
+  Inspect Geometry is explicit, applies to one terminal complete candidate, and never
+  reruns A*, samples terrain, edits a worklist or invokes native proposal code.
+- Copy at most 256 validated XYZ waypoints; reject larger input without truncation.
+  Separate fitting and DTO checking into two guiUpdate callbacks, eight diagnostic
+  intervals per segment. Preserve the 50 ms observed-work guard; it is not preemption
+  and zero clock deltas do not prove zero processing time. Release temporary curves.
+- Transfer only ten bounded summary lines, never geometry arrays. Preserve historical
+  corridor identity/provenance; no fresh-world engineering claim. Clear on accepted
+  replacement requests, Refresh and session reset; reject busy/stale/replayed clicks.
+  Window close does not cancel the bounded owner job; reopen requires a fresh response.
+- Native preview gate is BLOCKED: no supported mod-owned activation, demonstrated
+  non-mutation or deterministic native processing cleanup. Do not activate ProposalViewer,
+  resolve guessed resources, or fabricate template/ownership data to bypass this gate.
 - Offline assembly lives in content/geometry/track_proposal_assembly.lua. Its descriptor
   is not a native SimpleProposal. Revalidate through Phase 6B; reject noncanonical node
   references instead of welding, fitting or attaching geometry. Preserve source evidence.
@@ -30,9 +47,9 @@ and actual construction remain unverified; scores are explicit planning preferen
   violations. Native readiness remains blocked even when all offline checks pass.
 - ProposalViewer is gated: accepted input declarations do not establish safe RNA tool
   ownership, non-mutation or cancellation/reload cleanup. Do not activate it or process
-  proposals in this milestone. Keep all live UI and subscriptions unchanged.
+  proposals in this milestone. Preserve existing UI styles and event subscriptions.
 - Phase 6B adapter lives in content/geometry/track_geometry_dto.lua. It is NOT a
-  SimpleProposal or processed Proposal, and no live code imports it. Preserve all
+  SimpleProposal or processed Proposal. Only explicit inspection imports it live. Preserve all
   endpoint/tangent values and source indices; DTO node indices are not entity IDs.
 - Require explicit world-frame provenance; keep caller resource references separate
   from resolved native templates. Never invent lanes, entity IDs, electrification
@@ -44,8 +61,8 @@ and actual construction remain unverified; scores are explicit planning preferen
   per segment. Provenance copying is bounded and rejects cycles/overflow, never truncates.
 - Preserve diagnostic violations, report prerequisites, and keep mathematical checks,
   vector-field correspondence and native validation as distinct evidence levels.
-- Geometry prototype lives in content/geometry/rail_curve.lua, with no live imports
-  or TF3 dependencies. Input is an explicit metre-unit XYZ projection; preserve the
+- Geometry prototype lives in content/geometry/rail_curve.lua, with no TF3 dependencies.
+  Live use is limited to explicit bounded inspection. Input is a metre-unit XYZ projection; preserve the
   original corridor, water/obstacle provenance and endpoint approximations outside it.
 - Candidate geometry uses cubic Hermite u in [0,1], both tangents dP/du, not unit
   directions or reversed end tangents. The fitting heuristic is an assumption, not
@@ -58,7 +75,7 @@ and actual construction remain unverified; scores are explicit planning preferen
   bridges/tunnels, stations and connections require future independent assessment.
 - Do not equate construction edgeLists, SimpleProposal and processed Proposal.
   makeProposalData accepts Proposal, not a documented SimpleProposal overload.
-  Phase 6C must not execute it, create WorldBuildProposal commands or send commands.
+  Phase 6D must not execute it, create WorldBuildProposal commands or send commands.
 - Batch coordination lives in network_batch.lua, in the existing GUI owner only.
   Reuse the plan event with a separate batch envelope/token; no extra subscription.
   Start only on Study Marked Corridors. Marking/editing never triggers a search.

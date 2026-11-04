@@ -2474,4 +2474,195 @@ test("batch: incomplete studies may continue but are not successful; pending can
     equal(heightReads, before); equal(gui:get().batch.notStarted, 2); equal(#gui:get().batch.results, 0)
 end)
 
+local geometryInspection = ug_require "oz_railway_network_architect::/live_plan_geometry.lua"
+local function inspectionToken(gui, candidateId)
+    local s=gui:get()
+    return {world=s.world,epoch=s.epoch,inspection={requestId=(s.inspectionRequestId or 0)+1,
+        corridorRequestId=s.requestId,candidateId=candidateId or s.request.preview.candidates[1].id}}
+end
+local function inspected(s) return s.inspection and s.inspection.finished end
+local function completedSession()
+    local gui,step,untilState,event,callbacks=newSession();ready(step,untilState)
+    assert(submit(gui,event).accepted);untilState(completed)
+    return gui,step,untilState,event,callbacks
+end
+local function geometryFixture(gui,n)
+    local s=gui:get();local c=s.request.result.candidates[1];local first=c.waypoints[1]
+    c.waypoints={}
+    for i=1,n do c.waypoints[i]={x=first.x+(i-1)*c.sampling.fineSpacing,y=first.y,z=-2,water=false} end
+    c.endpoints.destination.x=c.waypoints[n].x;c.endpoints.destination.y=first.y
+    s.request.preview=assert(preview.build(s))
+    return c
+end
+
+test("geometry: no automatic inspection and only complete candidates enable the explicit action",function()
+    local gui,step,untilState,event=newSession();ready(step,untilState)
+    local render,poll,tree,controls=mountUI();controls.launcher.params.onClick();tree=render()
+    equal(find(tree,"Button","Inspect Geometry")[1].params.meta.enabled,false)
+    find(tree,"Button","Inspect Geometry")[1].params.onClick();render();equal(gui:get().inspection,nil)
+    submit(gui,event);untilState(completed);poll();tree=render()
+    assert(find(tree,"Button","Inspect Geometry")[1].params.meta.enabled)
+    step(60);poll();render();equal(gui:get().inspection,nil);equal(logCount("[RNA:GEOM:6D] START"),0)
+end)
+test("geometry: two bounded stages preserve corridor and perform no search or terrain reads",function()
+    local gui,step,untilState,event=completedSession()
+    local before=serialize(gui:get().request);local sampled=heightReads
+    planner.plan=function() error("inspection reran A*") end;planner.step=planner.plan
+    assert(event("plan",inspectionToken(gui)).accepted)
+    equal(gui:get().inspection.phase,"fit");equal(event("status").busy,true)
+    step();equal(gui:get().inspection.phase,"validate");equal(gui:get().inspection.points,nil)
+    step();local job=gui:get().inspection
+    equal(job.status,"complete");equal(job.curves,nil);equal(job.points,nil)
+    equal(job.metrics.continuity,"exact_C0_C1");equal(job.metrics.maxGradient,0)
+    equal(serialize(gui:get().request),before);equal(heightReads,sampled);equal(gui:get().requestId,1)
+    local value=event("status");assert(geometryInspection.valid(value.inspection,value))
+    local serialized=serialize(value.inspection)
+    assert(not serialized:find("waypoints=",1,true));assert(not serialized:find("segments=",1,true))
+    assert(#serialized<6000);equal(logCount("[RNA:GEOM:6D] COMPLETE"),1)
+end)
+test("geometry: selected candidate ID is honored and missing resources are not fabricated",function()
+    local gui,step,untilState,event=completedSession()
+    local function copy(v) if type(v)~="table" then return v end;local t={};for k,x in pairs(v) do t[k]=copy(x) end;return t end
+    local s=gui:get();local c=copy(s.request.result.candidates[1]);c.id="fixture_second";c.rank=2
+    c.waypoints[2].z=c.waypoints[2].z+1;s.request.result.candidates[2]=c
+    s.request.preview=assert(preview.build(s))
+    local render,poll,tree,controls=mountUI();controls.launcher.params.onClick();tree=render()
+    find(tree,"ComboBox")[3].params.onValueChange(c.id);tree=render()
+    find(tree,"Button","Inspect Geometry")[1].params.onClick();render();untilState(inspected);poll();tree=render()
+    equal(gui:get().inspection.candidateId,c.id);assert(gui:get().inspection.metrics.maxGradient>0)
+    equal(find(tree,"ComboBox")[3].params.value,c.id)
+    assert(panelText(tree):find("Missing: track template/lanes/style",1,true))
+    assert(panelText(tree):find("Native preview: BLOCKED",1,true));assert(panelText(tree):find("Construction status: unverified",1,true))
+    equal(api.cmd,nil);equal(gui:get().inspection.proposal,nil)
+end)
+test("geometry: oversized corridor returns explicit unsupported without truncating",function()
+    local gui,step,untilState,event=completedSession();local c=geometryFixture(gui,257)
+    local before=serialize(c);assert(event("plan",inspectionToken(gui)).accepted)
+    local job=gui:get().inspection;equal(job.status,"unsupported");assert(job.reason:find("at_most_256",1,true))
+    equal(job.points,nil);equal(job.curves,nil);equal(job.metrics,nil);equal(serialize(c),before)
+    step(40);equal(logCount("[RNA:GEOM:6D] COMPLETE"),1)
+end)
+test("geometry: maximum supported size remains bounded and clears temporary curves",function()
+    local gui,step,untilState,event=completedSession();geometryFixture(gui,256)
+    assert(event("plan",inspectionToken(gui)).accepted);untilState(inspected)
+    local job=gui:get().inspection;equal(job.status,"complete");equal(job.metrics.segments,255)
+    equal(job.curves,nil);equal(job.points,nil);assert(#serialize(event("status").inspection)<6000)
+end)
+test("geometry: missing XYZ and discontinuous corridor positions are unsupported",function()
+    for _,mode in ipairs({"height","gap"}) do
+        local gui,step,untilState,event=completedSession();local c=gui:get().request.result.candidates[1]
+        if mode=="height" then c.waypoints[2].z=nil else c.waypoints[2].x=c.waypoints[2].x+1 end
+        assert(event("plan",inspectionToken(gui)).accepted);equal(gui:get().inspection.status,"unsupported")
+        equal(gui:get().inspection.metrics,nil);equal(gui:get().inspection.points,nil)
+    end
+end)
+test("geometry: reversed neighboring grid steps report incompatible fit rather than completion",function()
+    local gui,step,untilState,event=completedSession();local c=geometryFixture(gui,4);local first=c.waypoints[1]
+    c.waypoints[3]={x=first.x,y=first.y,z=-2,water=false}
+    c.waypoints[4]={x=first.x,y=first.y+32,z=-2,water=false}
+    c.endpoints.destination.x=c.waypoints[4].x;c.endpoints.destination.y=c.waypoints[4].y
+    gui:get().request.preview=assert(preview.build(gui:get()))
+    assert(event("plan",inspectionToken(gui)).accepted);untilState(inspected)
+    equal(gui:get().inspection.status,"unsupported");assert(gui:get().inspection.reason:find("fit:",1,true))
+end)
+test("geometry: busy replay stale and mixed envelopes cannot repeat or reroute inspection",function()
+    local gui,step,untilState,event=completedSession();local token=inspectionToken(gui)
+    assert(event("plan",token).accepted);equal(event("plan",token).reason,"busy")
+    equal(submit(gui,event).reason,"busy");equal(analyze(gui,event).reason,"busy");equal(event("refresh").reason,"busy")
+    untilState(inspected);equal(event("plan",token).reason,"duplicate_or_stale_inspection")
+    token=inspectionToken(gui);token.inspection.corridorRequestId=99;equal(event("plan",token).reason,"stale_corridor_request")
+    token=inspectionToken(gui);token.batch={action="start"};equal(event("plan",token).reason,"invalid_inspection_envelope")
+    token=inspectionToken(gui);token.world=-1;equal(event("plan",token).reason,"stale_session")
+    local r=gui:get().request
+    for _,field in ipairs({"world","requestId"}) do
+        local original=r[field];r[field]=-1
+        equal(event("plan",inspectionToken(gui)).reason,"completed_corridor_required")
+        r[field]=original
+    end
+    assert(event("plan",inspectionToken(gui)).accepted);untilState(inspected)
+    equal(gui:get().inspectionRequestId,2);equal(logCount("[RNA:GEOM:6D] START"),2)
+end)
+test("geometry: world change and reload discard active and completed inspection",function()
+    for _,mode in ipairs({"world","reload"}) do for _,finish in ipairs({false,true}) do
+        local gui,step,untilState,event,callbacks=completedSession()
+        event("plan",inspectionToken(gui));step();local job=gui:get().inspection
+        if finish then untilState(inspected) end
+        if mode=="world" then worldId=100;event("status")
+        else callbacks.guiHandleEvent(nil,nil,gui,"test","gameUI","reactPostInit",{}) end
+        equal(job.status,"invalidated");equal(job.curves,nil);equal(gui:get().inspection,nil)
+        equal(event("status").inspection,nil);equal(gui:get().inspectionRequestId,0)
+    end end
+end)
+test("geometry: new manual and refresh requests clear completed results",function()
+    for _,mode in ipairs({"plan","refresh"}) do
+        local gui,step,untilState,event=completedSession();event("plan",inspectionToken(gui));untilState(inspected)
+        if mode=="plan" then assert(submit(gui,event,20,10).accepted) else assert(event("refresh").accepted) end
+        equal(gui:get().inspection,nil);equal(event("status").inspection,nil)
+        if mode=="plan" then untilState(completed);equal(gui:get().request.status,"ok") end
+    end
+end)
+test("geometry: close reopen and old callbacks cannot replay inspection",function()
+    local gui,step,untilState,event=completedSession()
+    local render,poll,tree,controls=mountUI();controls.launcher.params.onClick();tree=render()
+    local click=find(tree,"Button","Inspect Geometry")[1].params.onClick
+    click();render();click();render();equal(gui:get().inspectionRequestId,1)
+    controls.panel.params.onClose();render();untilState(inspected)
+    controls.autoJoin=false;controls.launcher.params.onClick();tree=render()
+    assert(not panelText(tree):find("Geometry inspection #",1,true));click();controls.flush();tree=render()
+    assert(panelText(tree):find("Geometry inspection #1",1,true));equal(gui:get().inspectionRequestId,1)
+    controls.autoJoin=true;find(tree,"Button","Inspect Geometry")[1].params.onClick();render();untilState(inspected)
+    poll();tree=render();equal(gui:get().inspectionRequestId,2)
+    controls.autoJoin=false;find(tree,"Button","Inspect Geometry")[1].params.onClick()
+    controls.panel.params.onClose();controls.flush();equal(gui:get().inspectionRequestId,2)
+end)
+test("geometry: malformed response hides results pauses polling and Refresh recovers",function()
+    local gui,step,untilState,event=completedSession();event("plan",inspectionToken(gui));untilState(inspected)
+    local render,poll,tree,controls=mountUI();controls.launcher.params.onClick();tree=render()
+    controls.resultFilter=function(v) v.inspection.epoch=-1;return v end
+    poll();tree=render();assert(panelText(tree):find("invalid geometry inspection",1,true))
+    assert(not panelText(tree):find("Geometry inspection #",1,true))
+    local n=#controls.events;poll();poll();equal(#controls.events,n)
+    controls.resultFilter=nil;find(tree,"Button","Refresh towns")[1].params.onClick();render();equal(gui:get().inspection,nil)
+end)
+test("geometry: performance or unavailable timing discards diagnostics safely",function()
+    for _,mode in ipairs({"slow","missing"}) do
+        local gui,step,untilState,event=completedSession();event("plan",inspectionToken(gui))
+        if mode=="slow" then clockStep=0.06 else api.util.getApplicationTime=function() return nil end end
+        step();local job=gui:get().inspection
+        equal(job.status,mode=="slow" and "performance_limit" or "timing_unavailable")
+        equal(job.curves,nil);equal(job.points,nil);equal(job.metrics,nil)
+    end
+end)
+test("geometry: unexpected math failure releases work without changing corridor",function()
+    local gui,step,untilState,event=completedSession();event("plan",inspectionToken(gui))
+    local fitter=ug_require "oz_railway_network_architect::/geometry/rail_curve.lua";local fit=fitter.fit
+    fitter.fit=function() error("synthetic fitting exception") end;step();fitter.fit=fit
+    equal(gui:get().inspection.status,"error");equal(gui:get().inspection.curves,nil)
+    equal(gui:get().request.status,"ok");assert(event("status").preview)
+end)
+test("geometry: network worklist and sequential batch workflows retain ownership and cancellation",function()
+    local gui,step,untilState,event=runNetwork(4)
+    study(gui,event,"1:4");untilState(completed)
+    local original=serialize(gui:get().worklist);event("plan",inspectionToken(gui));untilState(inspected)
+    equal(serialize(gui:get().worklist),original)
+    editNetwork(gui,event,"mark_study","1:4");equal(gui:get().inspection,nil)
+    event("plan",inspectionToken(gui));untilState(inspected)
+    assert(startBatch(gui,event).accepted);equal(gui:get().inspection,nil)
+    equal(event("plan",inspectionToken(gui)).reason,"busy")
+    assert(event("plan",batchToken(gui,"cancel")).accepted);equal(gui:get().batch.status,"cancelled")
+    assert(startBatch(gui,event).accepted);untilState(batchDone);equal(gui:get().batch.succeeded,1)
+    assert(event("plan",inspectionToken(gui)).accepted);untilState(inspected)
+    assert(analyze(gui,event).accepted);equal(gui:get().inspection,nil);untilState(networkDone)
+    equal(gui:get().network.status,"ok")
+end)
+test("geometry: unreachable incomplete or missing candidates cannot be inspected",function()
+    for _,status in ipairs({"unreachable","unsupported","incomplete","search_limit"}) do
+        local gui,step,untilState,event=completedSession();local token=inspectionToken(gui)
+        gui:get().request.status=status
+        equal(event("plan",token).reason,"completed_corridor_required");equal(gui:get().inspection,nil)
+    end
+    local gui,step,untilState,event=completedSession()
+    equal(event("plan",inspectionToken(gui,"absent")).reason,"candidate_not_available")
+end)
+
 print("PASS " .. passed .. " live planning/UI tests (mocked engine and React, not TF3 runtime verification)")

@@ -154,7 +154,8 @@ function flow.input(session, config)
             if flow.finite(raw.height) then cell.height = raw.height end
             if type(raw.water) == "boolean" then cell.water = raw.water end
         end
-        -- Obstacle fields are deliberately absent: no obstacle source is verified.
+        -- Optional station workflow supplies conservative verified local occupancy boxes.
+        if session.anchorOverride and raw and raw.blocked==true then cell.blocked=true end
         cells[index] = cell
     end
     return {start = {x = layout.start.x, y = layout.start.y},

@@ -71,5 +71,6 @@ planning_lua.execute((root / "tests" / "network_worklist_test.lua").read_text(en
 planning_lua.execute((root / "tests" / "rail_geometry_test.lua").read_text(encoding="utf-8"))
 planning_lua.execute((root / "tests" / "track_geometry_dto_test.lua").read_text(encoding="utf-8"))
 planning_lua.execute((root / "tests" / "track_proposal_assembly_test.lua").read_text(encoding="utf-8"))
+planning_lua.execute((root / "tests" / "station_sites_test.lua").read_text(encoding="utf-8"))
 planning_lua.globals().CONTENT = (package / "content").as_posix()
 planning_lua.execute((root / "tests" / "live_plan_test.lua").read_text(encoding="utf-8"))

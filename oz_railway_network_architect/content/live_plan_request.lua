@@ -55,7 +55,10 @@ local function finish(session, status, reason)
         .. " zero_is_not_zero_cost=true elapsed_includes_scheduling=true preemptive=false"
         .. " min_observed_between_work_callbacks_seconds=" .. flow.number(session.minCallbackGap)
         .. " callback_gap_is_not_clock_resolution=true")
-    report("WARNINGS town_centers_are_approximate_anchors;sampled_terrain_only;buildings_and_infrastructure_obstacles_unaccounted_for;no_hard_gradient_limit;relative_scores_not_game_costs;no_construction_validation;water_policy=" .. config.waterPolicy)
+    report("WARNINGS " .. (session.anchorOverride
+        and "approximate_station_approaches;local_AABB_occupancy_only;other_obstacles_unknown;"
+        or "town_centers_are_approximate_anchors;buildings_and_infrastructure_obstacles_unaccounted_for;")
+        .. "sampled_terrain_only;no_hard_gradient_limit;relative_scores_not_game_costs;no_construction_validation;water_policy=" .. config.waterPolicy)
     report("COMPLETE status=" .. status .. " candidates=" .. tostring(result and #result.candidates or 0)
         .. " data_complete=" .. tostring((session.hierarchy ~= nil and status == "ok") or (session.samples ~= nil and #session.samples == session.layout.requested
             and session.invalidSamples == 0 and session.failedSamples == 0
@@ -75,6 +78,18 @@ local function prepare(session)
         .. " rejected=" .. tostring(session.rejectedTowns)
         .. " read_errors=" .. session.townErrors)
     if not pair then fail("unsupported", reason) end
+    session.townPair=pair
+    if session.anchorOverride then
+        local selected={method="explicit_station_approaches"}
+        for _,role in ipairs({"start","destination"}) do
+            local a=session.anchorOverride[role];local t=pair[role]
+            if type(a)~="table" or a.townId~=t.id or not flow.finite(a.x) or not flow.finite(a.y) or not flow.finite(a.z)
+                or a.x%128~=0 or a.y%128~=0 then fail("unsupported","invalid_station_approach") end
+            selected[role]={id=t.id,name=t.name,x=a.x,y=a.y,z=a.z}
+        end
+        selected.distance=math.sqrt((selected.start.x-selected.destination.x)^2+(selected.start.y-selected.destination.y)^2)
+        pair=selected
+    end
     session.pair = pair
     report("ENDPOINT_VALIDATION status=ok source_id=" .. session.sourceId .. " destination_id=" .. session.destinationId)
     report("SELECT method=" .. pair.method .. " source_distance=" .. flow.number(pair.distance))
@@ -82,13 +97,19 @@ local function prepare(session)
         local t = pair[role]
         report("TOWN role=" .. role .. " id=" .. t.id .. " name=" .. quoted(t.name)
             .. " source_x=" .. flow.number(t.x) .. " source_y=" .. flow.number(t.y) .. " source_z=" .. flow.number(t.z)
-            .. " position_source=bounding_volume_center")
+            .. " position_source="..(session.anchorOverride and "station_approach" or "bounding_volume_center"))
     end
     local layout, layoutReason = flow.layout(pair, session.bounds, config)
     if not layout then
         if layoutReason ~= "pair_exceeds_grid_resolution_or_boundary_margin" then fail("unsupported", layoutReason) end
         session.hierarchy = hierarchy.start(pair, session.bounds, {maxSnap = config.maxSnap,
             maxRelativeSnap = config.maxRelativeSnap, constraints = {waterPolicy = config.waterPolicy}})
+        if session.anchorOverride then
+            for _,role in ipairs({"start","destination"}) do
+                local a=session.hierarchy.anchors and session.hierarchy.anchors[role]
+                if not a or a.x~=pair[role].x or a.y~=pair[role].y then fail("unsupported","station_approach_snap_rejected") end
+            end
+        end
         session.phase, session.progress = "hierarchy", "Planning a coarse guide before local terrain refinement."
         report("LONG_DISTANCE mode=hierarchical coarse_spacing=512 fine_spacing=64 window_limit=32")
         for _, role in ipairs({"start", "destination"}) do
@@ -98,6 +119,11 @@ local function prepare(session)
                 .. " policy=nearest_in_bounds_fine_lattice_half_up") end
         end
         return
+    end
+    if session.anchorOverride then
+        for _,role in ipairs({"start","destination"}) do
+            if layout[role].x~=pair[role].x or layout[role].y~=pair[role].y then fail("unsupported","station_approach_snap_rejected") end
+        end
     end
     session.layout, session.samples, session.examples = layout, {}, {}
     session.validSamples, session.invalidSamples, session.failedSamples, session.failedReads = 0, 0, 0, 0
@@ -118,12 +144,23 @@ local function verifySources(session)
         if bounds[key] ~= session.bounds[key] then fail("invalidated", "map_bounds_changed") end
     end
     for _, role in ipairs({"start", "destination"}) do
-        local previous = session.pair[role]
+        local previous = (session.townPair or session.pair)[role]
         local current = adapter.town(previous.id)
         if not flow.sameTown(previous, current) then
             fail("invalidated", "selected_town_changed id=" .. previous.id .. " detail=" .. (current.error or "position_or_component_unavailable"))
         end
     end
+end
+
+local function sample(session,x,y)
+    local raw=adapter.sample(session.bounds,x,y)
+    if session.anchorOverride and session.anchorOverride.objects then
+        for _,o in ipairs(session.anchorOverride.objects) do
+            local b=o.box
+            if x>=b.minX-80 and x<=b.maxX+80 and y>=b.minY-80 and y<=b.maxY+80 then raw.blocked=true;break end
+        end
+    end
+    return raw
 end
 
 local function work(session, world)
@@ -151,7 +188,7 @@ local function work(session, world)
         local last = math.min(#session.samples + 16, session.layout.requested)
         for index = #session.samples + 1, last do
             local x, y = flow.position(session.layout, index)
-            flow.add(session, adapter.sample(session.bounds, x, y))
+            flow.add(session, sample(session, x, y))
         end
         if #session.samples == session.layout.requested then session.phase = "planning" end
     elseif session.phase == "planning" then
@@ -188,7 +225,7 @@ local function work(session, world)
         local h = session.hierarchy
         local searching = h.phase == "coarse_search" or h.phase == "fine_search"
         local began = now()
-        hierarchy.step(h, function(x, y) return adapter.sample(session.bounds, x, y) end)
+        hierarchy.step(h, function(x, y) return sample(session, x, y) end)
         local elapsed = now() - began
         if elapsed < 0 then fail("invalidated", "application_clock_went_backwards") end
         if searching then session.searchSeconds = (session.searchSeconds or 0) + elapsed end
@@ -256,9 +293,9 @@ local function runWork(session)
 end
 
 local request = {}
-function request.start(world, sourceId, destinationId, requestId)
+function request.start(world, sourceId, destinationId, requestId, anchorOverride)
     return {world = world.id, tick = world.tick, sourceId = sourceId, destinationId = destinationId,
-        requestId = requestId, phase = "begin", batchWait = 0}
+        requestId = requestId, phase = "begin", batchWait = 0, anchorOverride=anchorOverride}
 end
 function request.step(session)
     if session.finished then return end

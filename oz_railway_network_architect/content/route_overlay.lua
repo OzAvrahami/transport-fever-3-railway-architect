@@ -2,6 +2,7 @@
 local flow = ug_require "oz_railway_network_architect::/live_plan_data.lua"
 local read = ug_require "oz_railway_network_architect::/live_plan_api.lua"
 local preview = ug_require "oz_railway_network_architect::/live_plan_preview.lua"
+local sites = ug_require "oz_railway_network_architect::/planning/station_sites.lua"
 local overlay = {maxSegments=1024, batchSize=16, halfWidth=12}
 local prefix = "oz_railway_network_architect.route."
 local function log(s) debugPrint("[RNA:ROUTE] "..s) end
@@ -76,7 +77,7 @@ function overlay.start(state,id)
     if not c then o.status="unsupported";log("UNAVAILABLE reason="..flow.text(index));return false,index end
     o.serial=o.serial+1;o.candidateId=id
     o.job={world=state.world,epoch=state.epoch,requestId=state.requestId,index=index,id=id,
-        cursor=1,count=#c.waypoints-1,serial=o.serial}
+        cursor=1,count=#c.waypoints-1,markers=c.stationSites and 6 or 0,serial=o.serial}
     log("START request="..state.requestId.." candidate="..id.." segments="..o.job.count.." prohibitBuilding=false")
     return true
 end
@@ -118,8 +119,18 @@ function overlay.step(state)
             or not r or not r.finished or r.status~="ok" then overlay.clear(state,"hidden");return end
         local c=r.result.candidates[j.index]
         if not c or c.id~=j.id or #c.waypoints~=j.count+1 then overlay.clear(state,"error");return end
-        while j.cursor<=j.count and work<overlay.batchSize do
-            local poly,why=overlay.ribbon(c.waypoints[j.cursor],c.waypoints[j.cursor+1])
+        while j.cursor<=j.count+j.markers and work<overlay.batchSize do
+            local poly,why,color
+            if j.cursor<=j.count then
+                poly,why=overlay.ribbon(c.waypoints[j.cursor],c.waypoints[j.cursor+1]);color={0,1,1,0.85}
+            else
+                local marker=j.cursor-j.count
+                local source=marker<=3
+                local site=c.stationSites and c.stationSites[source and "source" or "destination"]
+                if not sites.valid(site) then overlay.clear(state,"error");return end
+                poly=sites.markers(site)[(marker-1)%3+1]
+                color=source and {1,0.65,0,0.8} or {0.9,0.2,1,0.8}
+            end
             if not poly then overlay.clear(state,"error");log("ERROR "..why);return end
             local key=prefix..j.epoch.."."..j.world.."."..j.requestId.."."..j.serial.."."..j.cursor
             -- Register before dispatch so an ambiguous exception is also cleaned up.
@@ -127,12 +138,12 @@ function overlay.step(state)
             local ok,err=pcall(function()
                 local points={}
                 for i,p in ipairs(poly) do points[i]=api.type.Vec2f.new(p.x,p.y) end
-                api.gui.mission.setZone(key,points,true,api.type.Vec4f.new(0,1,1,0.85),false,false,1)
+                api.gui.mission.setZone(key,points,true,api.type.Vec4f.new(color[1],color[2],color[3],color[4]),false,false,1)
             end)
             if not ok then overlay.clear(state,"error");log("ERROR api=api.gui.mission.setZone detail="..flow.text(err));return end
             j.cursor=j.cursor+1;work=work+1
         end
-        if j.cursor>j.count then
+        if j.cursor>j.count+j.markers then
             o.status="shown";o.job=nil
             log("DRAW_SUBMITTED request="..j.requestId.." candidate="..j.id.." zones="..#o.keys.." native_visibility=unverified")
         end

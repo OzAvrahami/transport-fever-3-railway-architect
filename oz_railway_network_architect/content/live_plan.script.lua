@@ -1,6 +1,8 @@
 local adapter = ug_require "oz_railway_network_architect::/live_plan_api.lua"
 local flow = ug_require "oz_railway_network_architect::/live_plan_data.lua"
 local request = ug_require "oz_railway_network_architect::/live_plan_request.lua"
+local stationRequest = ug_require "oz_railway_network_architect::/station_plan_request.lua"
+local function requestOwner(r) return r and r.stationAware and stationRequest or request end
 local preview = ug_require "oz_railway_network_architect::/live_plan_preview.lua"
 local network = ug_require "oz_railway_network_architect::/network_live_request.lua"
 local handoff = ug_require "oz_railway_network_architect::/network_corridor_handoff.lua"
@@ -24,7 +26,7 @@ local function reset(state, reason)
     geometry.stop(state.inspection, "invalidated", reason)
     batch.stop(state.batch, "invalidated", reason)
     if state.network then network.invalidate(state.network, reason) end
-    if state.request then request.invalidate(state.request, reason) end
+    if state.request then requestOwner(state.request).invalidate(state.request, reason) end
     report("SESSION_RESET reason=" .. flow.text(reason))
     local nextState=newState(state)
     nextState.routeOverlay=overlay.reset(state)
@@ -102,7 +104,7 @@ local function response(state, accepted, reason)
     return {epoch = state.epoch, world = state.world, tick = state.tick, listVersion = state.listVersion,
         requestId = state.requestId, accepted = accepted, reason = reason, towns = towns,
         status = state.status, message = state.message, busy = busy(state),
-        routeOverlay = overlay.summary(state),
+        routeOverlay = overlay.summary(state), stationAware = r and r.stationAware == true or false,
         networkRequestId = state.networkRequestId,
         batchRequestId = state.batchRequestId, batch = batch.summary(state.batch),
         inspectionRequestId = state.inspectionRequestId or 0, inspection = geometry.summary(state.inspection, state),
@@ -150,7 +152,7 @@ local function update(state)
         state = synchronize(state) -- Do not expose a catalog from an invalidated world.
     end
     if state.request and not state.request.finished then
-        request.step(state.request)
+        requestOwner(state.request).step(state.request)
         if not state.request.finished and state.request.progress then state.message = state.request.progress end
         if state.request.finished then
             local r = state.request
@@ -228,7 +230,7 @@ function data()
                 overlay.clear(state,"error")
                 geometry.stop(state.inspection, "error", "session_update_failed")
                 batch.stop(state.batch, "stopped", "session_update_failed")
-                if state.request then request.invalidate(state.request, "session_update_failed") end
+                if state.request then requestOwner(state.request).invalidate(state.request, "session_update_failed") end
                 if state.network then network.invalidate(state.network, "session_update_failed") end
                 if state.status ~= "error" then report("ERROR detail=" .. flow.text(updated)) end
                 state.status, state.message, state.catalog = "error", flow.text(updated), nil
@@ -372,6 +374,7 @@ function data()
                     accepted = true; return
                 end
                 if not flow.id(param.requestId) or param.requestId ~= state.requestId + 1 then reason = "duplicate_or_stale_request"; return end
+                if param.stationAware ~= nil and (type(param.stationAware) ~= "boolean" or param.network ~= nil) then reason = "invalid_station_request"; return end
                 if not state.ready or state.catalog or (state.status == "error" and not state.request) then reason = "not_ready"; return end
                 -- Consume the click token even on validation failure; replay cannot restart work.
                 state.requestId = param.requestId
@@ -402,7 +405,7 @@ function data()
                 end
                 local world = adapter.world()
                 if flow.worldChanged(state, world) then state = reset(state, "world_changed_during_request"); reason = "stale_session"; return end
-                state.request = request.start(world, sourceId, destinationId, param.requestId)
+                state.request = (param.stationAware and stationRequest or request).start(world, sourceId, destinationId, param.requestId)
                 state.request.networkOrigin = origin
                 if origin then
                     debugPrint("[RNA:HANDOFF:5B2] START request=" .. param.requestId

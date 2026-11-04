@@ -1,27 +1,30 @@
 # Railway Network Architect
 
-**Current: Visible Route Preview ? native freeplay visibility awaiting the owner's test.**
+**Current: Station-aware passenger railway planning, ready for code review.**
 
-Choose **Midhurst** and **Goole**, then **Plan Railway**. A completed corridor is
-submitted as a continuous bright cyan terrain ribbon, following every original
-waypoint segment. **Hide Route**, **Show Route** and **Focus Route** reuse that result;
-a small route selector appears when alternatives exist. No railway is constructed.
+The owner has verified the cyan route overlay in native TF3 Freeplay. The new station
+workflow is implemented and automated-tested; its native Midhurst?Morley test is pending.
 
-Build Test Track and confirmation controls are removed. The construction adapter is
-archived outside the deployable package; old build events are rejected. Metadata is
-read-only again (`cosmetic=true`). All planners, inventories, geometry, network,
-worklist and batch algorithms remain unchanged.
+Choose Source town and Destination town, then **Plan Railway**. RNA now searches near
+actual occupied town buildings for approximate passenger through-station reservations,
+checks local occupancy/terrain/road proximity, and studies up to two promising station
+pairs through the existing corridor planner. No suitable pair means an explicit
+unresolved result, never a fallback to town-center endpoints.
 
-The documented zone API is used with `draw=true` and `prohibitBuilding=false` from
-the existing GUI owner. Rendering is capped at 1,024 segments, 16 native operations
-per callback. No route truncation, simplification or straight-line substitution.
-Closing RNA hides the overlay; reopening requires Show Route. Keep the window open
-or drag it aside while inspecting the route with the camera.
+On success, **orange** marks the source station reservation and **purple** the destination;
+**cyan** follows the computed corridor between their approach points. Alternative selection,
+Hide/Show/Focus Route and close/reload cleanup reuse the existing renderer. No station or
+railway is built. Road proximity is not verified walking access, and the reservation is
+not a construction-ready native footprint. The route remains unsmoothed.
 
-**362 automated tests pass; 56 Lua files pass syntax checks.** This is not proof that
-TF3 renders the zones in freeplay. See the [source evidence, changed files and one
-focused native acceptance procedure](docs/visible_route_preview.md). No staging,
-commits, pushes or save changes were performed. Stop for review and native verification.
+**394 tests pass; 60 Lua files pass syntax checks.** The original 362 regressions remain.
+See [station data evidence, selection assumptions, changed files, limits and the focused
+native acceptance procedure](docs/station_aware_planning.md). The authoritative A*,
+hierarchy, inventories, network/worklist/batch and geometry algorithms are preserved.
+
+All construction capability stays disconnected and archived outside the deployable mod.
+Read-only metadata, identity and revision are unchanged. No staging deployment, save
+changes, commit or push was performed. Stop for owner review before native testing.
 
 ## Previous direction (superseded)
 

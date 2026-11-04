@@ -2,44 +2,53 @@
 
 ## Current milestone
 
-Visible Route Preview: read-only world-space alignment display. Construction authorization
-is revoked. The earlier test-track experiment is archived outside the deployable mod
-under reference/ and must never be imported by a live script. Reject its event envelope.
-No sendCommand, WorldBuildProposal, construction tools, ProposalViewer, terrain changes,
-stations, staging deployment, commits, tags or pushes. Stop for owner review and one
-Midhurst-to-Goole native visibility test.
+Station-Aware Railway Planning. The owner has verified the cyan route in native TF3
+Freeplay. New station reservations and approach-to-approach planning still require one
+Midhurst?Morley native acceptance test after review. No construction, terrain changes,
+staging deployment, commits, tags, pushes, identity or revision changes.
 
-- Preserve the small native window, launcher, five subscriptions and request owner.
-  Player controls: town selectors, Plan Railway, simple status, Hide/Show/Focus Route
-  and a small alternative selector. No developer diagnostics or build controls.
-- route_overlay.lua is the sole keyed-zone owner. Use documented GUI mission setZone
-  with draw=true, prohibitBuilding=false, playAnimation=false and an explicit 1 m offset.
-  Use matching removeZone keys in the mod namespace only. No world entity deletion.
-- Render each original consecutive XY segment as a cyan 24 m-wide terrain ribbon.
-  No simplification, route shortening, A* rerun or invented alignment. Z is projected
-  onto the native terrain; this is a proposed corridor, not track or final rail geometry.
-- Require a terminal complete/ok candidate from the authoritative current request.
-  Reject more than 1,024 segments without truncation. Process at most 16 zone operations
-  per GUI callback, with the existing 50 ms observed-work guard (not preemption).
-- Keep all route arrays in the Game Script owner. Polling transfers only compact state,
-  IDs and existing candidate summaries. The existing plan event carries overlay actions;
-  no new subscriptions, global mutable state or cross-script snapshots.
-- Own zones with a server-issued view lease. Teardown queues main-thread cleanup;
-  expire after five seconds without the normal status heartbeat as a fallback.
-  Preserve world/epoch/request/sequence checks. Close/reload cancels pending drawing;
-  reopen requires an explicit Show for old results. Cleanup precedes replacements.
-- Partial rendering is labelled Showing route. On any rendering error clear partial
-  owned zones and log the exact API failure. Failed removal pauses to avoid an error
-  storm; retain those keys for a bounded explicit retry or reset, never silently forget.
-- EdgeRenderable's native types are known, but a supported mod renderer/action ownership
-  path is not established. Internal useAction/setActiveOwner is not permission to take
-  over native tools. Do not use it or ProposalViewer as a speculative fallback.
-- The public zone contract and shipped GUI-state calls are verified; their native
-  implementation and ordinary-freeplay visibility are not proven by source or mocks.
-  Do not claim acceptance until the owner sees the route while moving the camera.
-- Preserve all accepted planners, inventories, worklists, batch and geometry algorithms.
-  Legacy developer UI tests remain; obsolete construction tests are archived separately.
-  The authoritative planner remains content/planning/ inside the mod.
+- Preserve the small native window, launcher, five subscriptions and GUI request owner.
+  Production Plan Railway explicitly sends stationAware=true. No automatic planning,
+  analytics UI or build controls. Unknown site suitability means unresolved, never a
+  fallback to town centers. Legacy hidden network/batch/developer callers remain intact.
+- station_site_api.lua normalizes protected native reads; planning/station_sites.lua
+  owns pure site/pair scoring. station_plan_request.lua owns the incremental session,
+  using the existing live_plan_request and authoritative A*/hierarchy sequentially.
+- Derive occupied urban extent from actual TOWN_BUILDING volumes, not the town volume.
+  Treat all local non-town/world AABBs as occupied. Read-only octree query caps must
+  fail explicitly on overflow. Never turn unavailable volumes/terrain into vacant land.
+- Passenger rail station hints require a terminal with TRAIN/ELECTRIC_TRAIN plus a
+  passenger load/unload flag. Road endpoint distance is not walking catchment. Physical
+  track proximity is not operational connectivity or verified attachment/reuse.
+- 160 m length follows four installed 40 m platform sections; 48 m width and 512x64 m
+  approach clearance are explicit approximate reservations, not native station geometry.
+  Cardinal orientations, 128 m approach offsets, 3% sampled grade and other thresholds
+  are prototype assumptions. Preserve evidence and unknowns in logs.
+- Cap sites at 48/town, terrain checks at 51/site and 16 reads/callback, shortlist at
+  three/town, cheap pair ranking at nine, actual sequential corridor studies at two.
+  Preserve existing per-corridor budgets and the shared 60 s station snapshot age.
+  Keep a 50 ms observed-work guard; native calls/state copies are not preemptible.
+- Separate selected town IDs/observations from explicit station approach XYZ. Endpoints
+  must match grid samples exactly; reject snaps instead of silently changing the site.
+  Revalidate towns/world/bounds and reservation occupancy before publishing.
+- Retain only complete routes with correct outward/inward approach direction and no
+  crossing of either reserved station body. No fabricated alternatives or smoothing.
+  C1 Hermite fitting does not establish safe approaches, curvature or construction.
+- route_overlay.lua remains the sole keyed-zone owner. Draw the original cyan route,
+  orange source and purple destination reservation/axis/cap polygons. Keep waypoint
+  order/coordinates; do not rerun A* for drawing, alternatives or Hide/Show/Focus.
+- Use documented GUI mission setZone draw=true, prohibitBuilding=false,
+  playAnimation=false, zOffset=1 and matching mod-owned removeZone keys only.
+  Max 1024 route segments plus six station polygons, 16 zone operations/callback.
+  No truncation, entity removal, global mutable state or shared inventory snapshots.
+- Preserve view leases, heartbeat expiry, stale sequence protection, cleanup before
+  replacement, close/reload cleanup and fresh reopen. Do not transfer full routes or
+  site terrain/occupancy arrays into React polling; only compact current-site metadata.
+- No sendCommand, WorldBuildProposal, ProposalViewer or construction tools. Archived
+  experimental code under reference/ must never be imported or exposed live.
+- The new station flow is not native acceptance. Record source evidence and assumptions
+  in docs/station_aware_planning.md; preserve all existing regression tests. Stop here
+  for owner review and the focused native test, not another feature milestone.
 
 Topology studies consider supplied demand evidence, distance, geography and transport
 alternatives. A city or industry does not automatically need rail. Economic feasibility

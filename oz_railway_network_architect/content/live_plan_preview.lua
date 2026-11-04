@@ -1,5 +1,6 @@
 -- Pure, bounded presentation data. This is an in-panel summary, NOT a map overlay.
 local flow = ug_require "oz_railway_network_architect::/live_plan_data.lua"
+local sites = ug_require "oz_railway_network_architect::/planning/station_sites.lua"
 local preview = {}
 local function array(value, limit)
     if type(value) ~= "table" then return nil end
@@ -46,6 +47,13 @@ function preview.valid(value, state)
         end
         for _, key in ipairs({"distance", "gradient", "waterObstacle", "total"}) do
             if not positive(c.score[key]) then return false end
+        end
+        if c.stationSites then
+            for _,role in ipairs({"source","destination"}) do
+                local s=c.stationSites[role];local endpoint=role=="source" and c.start or c.destination
+                if not sites.valid(s) or s.townId~=value[role].id then return false end
+                for _,axis in ipairs({"x","y","z"}) do if endpoint[axis]~=s.approach[axis] then return false end end
+            end
         end
         ids[c.id] = true
     end
@@ -105,6 +113,17 @@ function preview.build(state)
             sourceSnap = endpoints.start.distance, destinationSnap = endpoints.destination.distance,
             score = {distance = c.score.distance, gradient = c.score.gradient,
                 waterObstacle = c.score.waterObstacle, total = c.score.total}}
+        if r.stationAware and not c.stationSites then return nil,"missing_station_sites" end
+        if c.stationSites then
+            local compact={}
+            for _,role in ipairs({"source","destination"}) do
+                local s=c.stationSites[role]
+                if not sites.valid(s) then return nil,"invalid_station_reservation" end
+                compact[role]={townId=s.townId,x=s.x,y=s.y,z=s.z,dx=s.dx,dy=s.dy,
+                    length=s.length,width=s.width,approximate=true,approach=copyPoint(s.approach)}
+            end
+            value.candidates[i].stationSites=compact
+        end
     end
     if not preview.valid(value, state) then return nil, "invalid_summary" end
     return value

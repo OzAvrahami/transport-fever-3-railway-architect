@@ -40,7 +40,7 @@ function ui.children(v)
             if not latest or latest.busy or not latest.canPlan or pair.source=="" or pair.destination=="" or pair.source==pair.destination then return end
             v.errorState:set("");v.confirmed:set(false)
             v.send("plan",{world=latest.world,epoch=latest.epoch,requestId=latest.requestId+1,
-                sourceId=tonumber(pair.source),destinationId=tonumber(pair.destination)})
+                sourceId=tonumber(pair.source),destinationId=tonumber(pair.destination),stationAware=true})
         end}
     local fresh=v.confirmed:old() and not v.transportFailed:get()
     local p=fresh and state.preview
@@ -54,7 +54,8 @@ function ui.children(v)
     elseif o.status=="unsupported" then status="Cannot display this route."
     elseif p then status="Route found"
     elseif state.status=="waiting" or state.status=="loading" then status="Loading towns... Unpause briefly."
-    elseif state.status~="idle" and state.status~="ok" then status="No route found. Try another pair of towns." end
+    elseif state.status~="idle" and state.status~="ok" then
+        status=state.stationAware and "Station planning unresolved. Try another pair of towns." or "No route found. Try another pair of towns." end
     if v.errorState:old()~="" and not v.transportFailed:get() then status="Action unavailable. Please try again when ready." end
     children[#children+1]=text(status)
     local function action(kind,id)
@@ -72,6 +73,12 @@ function ui.children(v)
         local found=false
         for _,c in ipairs(p.candidates) do if c.id==selectedId then found=true end end
         if not found then selectedId=p.candidates[1].id end
+        for _,c in ipairs(p.candidates) do if c.id==selectedId and c.stationSites then
+            children[#children+1]=text("Proposed railway route")
+            children[#children+1]=text("Station near "..p.source.name.." (orange)")
+            children[#children+1]=text("Station near "..p.destination.name.." (purple)")
+            children[#children+1]=text("Approximate station reservations; passenger access is unverified.")
+        end end
         if #p.candidates>1 then
             local items={}
             for i,c in ipairs(p.candidates) do items[i]=builtin.ComboBoxItem{value=c.id,content=text("Route "..i)} end

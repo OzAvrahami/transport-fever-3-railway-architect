@@ -130,6 +130,7 @@ local function newSession(overrides, deliveryGate)
     end
     -- Resource modules are loaded once per runtime; isolate config between test games.
     package.loaded["live_plan_request"] = nil
+    package.loaded["station_plan_request"] = nil
     package.loaded["network_batch"] = nil
     -- Resolve the actual descriptor exports, rather than assuming registration.
     dofile(CONTENT .. "/live_plan.gs.lua")
@@ -2921,15 +2922,52 @@ end)
 -- Public zone contract mock: world-space polygons persist until their matching key is removed.
 -- This checks arguments and lifecycle, NOT native freeplay visibility.
 local routeOverlay=ug_require "oz_railway_network_architect::/route_overlay.lua"
+-- Synthetic occupied town blocks and physical street endpoints. These are not native
+-- visibility or catchment evidence; the real adapter is exercised against the declarations.
+local function stationFixture()
+    local f={objects={},townBuildings={}}
+    local types=api.type.ComponentType
+    types.TOWN_BUILDING="townBuilding";types.BASE_EDGE="edge";types.STATION="station"
+    api.type["enum"]={RoadType={STREET="street",TRACK="track"},TransportMode={TRAIN="train",ELECTRIC_TRAIN="electricTrain"}}
+    api.type.Vec3f={new=function(x,y,z) return {x=x,y=y,z=z} end}
+    api.type.Box3={new=function(a,b) return {min=a,max=b} end}
+    local function add(id,box,component)
+        f.objects[id]={bbox={min={x=box[1],y=box[2],z=-10},max={x=box[3],y=box[4],z=30}},component=component}
+    end
+    for id,t in pairs(entities) do
+        local building=id*100+1;local road=id*100+2
+        f.townBuildings[id]={building}
+        add(building,{t.x-40,t.y-40,t.x+40,t.y+40},{townBuilding={town=id,construction=building}})
+        add(road,{t.x-100,t.y-4,t.x+100,t.y+4},{edge={roadType="street",
+            position0={x=t.x-100,y=t.y,z=-2},position1={x=t.x+100,y=t.y,z=-2}}})
+    end
+    local get=api.engine.getComponent
+    api.engine.getComponent=function(id,kind)
+        local o=f.objects[id]
+        if o then if kind=="volume" then return {bbox=o.bbox} end;return o.component[kind] end
+        return get(id,kind)
+    end
+    api.engine.system.townBuildingSystem={getTown2BuildingMap=function() return f.townBuildings end}
+    api.engine.system.stationSystem={getStations=function() return {} end}
+    api.engine.system.octreeSystem={findIntersectingEntities=function(b,fn)
+        for id,o in pairs(f.objects) do local v=o.bbox
+            if b.min.x<=v.max.x and b.max.x>=v.min.x and b.min.y<=v.max.y and b.max.y>=v.min.y then fn(id,{bbox=v}) end
+        end
+    end}
+    f.add=add
+    return f
+end
 local function zoneFixture()
     local f={zones={other_mod_zone={}},adds={},removes={},focus={},commands=0}
+    f.station=stationFixture()
     api.type.Vec4f={new=function(x,y,z,w) return {x=x,y=y,z=z,w=w} end}
     api.type.Vec3f={new=function(x,y,z) return {x=x,y=y,z=z} end}
     api.gui.mission={setZone=function(key,polygon,draw,color,prohibit,animation,zOffset)
         assert(key:match('^oz_railway_network_architect%.route%.'))
         equal(draw,true);equal(prohibit,false);equal(animation,false);equal(zOffset,1)
-        equal(color.x,0);equal(color.y,1);equal(color.z,1);equal(#polygon,4)
-        f.adds[#f.adds+1]={key=key,polygon=polygon}
+        assert((color.x==0 and color.y==1 and color.z==1) or (color.x==1 and color.y==0.65 and color.z==0)
+            or (color.x==0.9 and color.y==0.2 and color.z==1));equal(#polygon,4)
+        f.adds[#f.adds+1]={key=key,polygon=polygon,color=color}
         f.zones[key]=polygon
         if f.failAdd then error('zone renderer unavailable fixture') end
     end,removeZone=function(key)
@@ -3214,4 +3252,186 @@ test('player overlay UI: malformed renderer responses stop polling instead of fa
     local count=#controls.events;poll();equal(#controls.events,count);equal(#f.adds,0);equal(f.commands,0)
 end)
 
+local function stationSubmit(gui,event)
+    local s=gui:get()
+    return event('plan',{world=s.world,epoch=s.epoch,requestId=s.requestId+1,sourceId=10,destinationId=20,stationAware=true})
+end
+local function stationSession(setup)
+    local gui,step,untilState,event=newSession();ready(step,untilState)
+    if setup then setup() end
+    local f=zoneFixture();event('status',{openRouteView=true})
+    return gui,step,untilState,event,f
+end
+test('stations: actual occupied urban bounds produce multiple sites and exactly matched approach endpoints',function()
+    local gui,step,untilState,event,f=stationSession();assert(stationSubmit(gui,event).accepted);untilState(completed)
+    local r=gui:get().request;equal(r.status,'ok');assert(r.stationAware and r.preview)
+    assert(#r.result.candidates>=1 and #r.result.candidates<=2);assert(hasLog('SHORTLIST town=10 sites=3'))
+    for _,c in ipairs(r.result.candidates) do
+        local s,d=c.stationSites.source,c.stationSites.destination
+        assert(s.x~=entities[10].x or s.y~=entities[10].y);assert(d.x~=entities[20].x or d.y~=entities[20].y)
+        equal(s.townId,10);equal(d.townId,20);equal(c.waypoints[1].x,s.approach.x);equal(c.waypoints[#c.waypoints].y,d.approach.y)
+        assert(require('planning.station_sites').approaches(c,{source=s,destination=d}))
+        equal(s.evidence.walkingAccess,'unknown');equal(c.constructionStatus,'unverified')
+    end
+    local response=event('status');equal(response.preview.candidates[1].waypoints,nil)
+    equal(response.preview.candidates[1].stationSites.source.evidence,nil)
+    equal(r.child,nil);equal(r.objects,nil);equal(r.towns,nil);equal(r.routes,nil)
+    equal(f.commands,0)
+end)
+test('stations: two colored reservations accompany the exact cyan corridor; switching and hiding never search',function()
+    local gui,step,untilState,event,f=stationSession();assert(stationSubmit(gui,event).accepted);untilState(completed);untilState(routeShown)
+    local r=gui:get().request;local c=r.result.candidates[1];local n=#c.waypoints-1
+    equal(#f.adds,n+6)
+    for i=1,n do local p=f.adds[i].polygon
+        equal((p[1].x+p[4].x)/2,c.waypoints[i].x);equal((p[2].y+p[3].y)/2,c.waypoints[i+1].y)
+        equal(f.adds[i].color.x,0)
+    end
+    equal(f.adds[n+1].color.x,1);equal(f.adds[n+4].color.x,.9)
+    local calls=heightReads;local searches=logCount('PAIR index=')
+    if #r.result.candidates>1 then
+        assert(routeAction(gui,event,'show',r.result.candidates[2].id).accepted);untilState(routeShown)
+        equal(gui:get().routeOverlay.candidateId,r.result.candidates[2].id)
+    end
+    assert(routeAction(gui,event,'hide').accepted);untilState(function() return noZones(f) end)
+    assert(routeAction(gui,event,'show').accepted);untilState(routeShown)
+    equal(heightReads,calls);equal(logCount('PAIR index='),searches);equal(f.commands,0)
+end)
+test('stations: missing occupied urban evidence fails without town-center fallback or A-star',function()
+    local gui,step,untilState,event,f=stationSession();f.station.townBuildings[10]={}
+    assert(stationSubmit(gui,event).accepted);untilState(completed)
+    equal(gui:get().request.result,nil);equal(gui:get().request.status,'unsupported');equal(logCount('PAIR index='),0)
+    assert(hasLog('occupied_urban_area_unknown'));equal(#f.adds,0)
+end)
+test('stations: wet and failed terrain never creates reservations or a substitute route',function()
+    for _,mode in ipairs({'wet','missing'}) do
+        local gui,step,untilState,event,f=stationSession()
+        if mode=='wet' then api.engine.terrain.isOnWater=function() return true end
+        else api.engine.terrain.getHeightAt=function() error('site height unavailable') end end
+        assert(stationSubmit(gui,event).accepted);untilState(completed)
+        equal(gui:get().request.status,'unsupported');equal(gui:get().request.result,nil);equal(#f.adds,0)
+    end
+end)
+test('stations: physical occupancy and absent road evidence leave sites unresolved',function()
+    for _,mode in ipairs({'blocked','no road'}) do
+        local gui,step,untilState,event,f=stationSession()
+        if mode=='blocked' then f.station.add(5000,{-1000,-900,1000,900},{})
+        else f.station.objects[1002]=nil end
+        assert(stationSubmit(gui,event).accepted);untilState(completed)
+        equal(gui:get().request.status,'unsupported');equal(#f.adds,0);equal(f.commands,0)
+    end
+end)
+test('stations: native passenger rail classification is terminal-specific, including electric trains',function()
+    local gui,step,untilState,event,f=stationSession();local native=require('station_site_api')
+    local function station(modes,passengers)
+        f.station.add(999,{-20,-20,20,20},{station={terminals={{transportModes=modes,passengersLoad=passengers,passengersUnload=false}}}})
+        return native.station(999)
+    end
+    equal(station({bus=true},true),nil);equal(station({train=true},false),nil)
+    equal(station({electricTrain=true},true).id,999);equal(station({train=true},true).id,999)
+end)
+test('stations: enumeration caps are explicit and do not truncate larger urban evidence',function()
+    local gui,step,untilState,event,f=stationSession()
+    f.station.townBuildings[10]={};for i=1,513 do f.station.townBuildings[10][i]=i end
+    assert(stationSubmit(gui,event).accepted);untilState(completed);equal(gui:get().request.status,'unsupported')
+    equal(logCount('PAIR index='),0);equal(#f.adds,0)
+end)
+test('stations: octree errors retain exact API paths and cannot become vacant land',function()
+    local gui,step,untilState,event,f=stationSession()
+    api.engine.system.octreeSystem.findIntersectingEntities=function() error('synthetic spatial failure') end
+    assert(stationSubmit(gui,event).accepted);untilState(completed)
+    assert(hasLog('octreeSystem.findIntersectingEntities'));assert(hasLog('synthetic spatial failure'))
+    equal(gui:get().request.result,nil);equal(#f.adds,0)
+end)
+test('stations: octree overflow is rejected and callable native bindings are used without function type guards',function()
+    local gui,step,untilState,event,f=stationSession();local native=require('station_site_api')
+    local query=api.engine.system.octreeSystem.findIntersectingEntities
+    api.engine.system.octreeSystem.findIntersectingEntities=setmetatable({}, {__call=function(_,...) return query(...) end})
+    assert(#native.query(bounds,2048)>0)
+    local ok,reason=pcall(native.query,bounds,1);equal(ok,false);assert(tostring(reason):find('station_spatial_query_limit',1,true))
+    equal(f.commands,0)
+end)
+test('stations: session invalidation cancels the active search and removes both marker sets',function()
+    local gui,step,untilState,event,f=stationSession();assert(stationSubmit(gui,event).accepted)
+    untilState(function(s) return s.request and s.request.child~=nil end)
+    local old=gui:get().request;worldId=100;step(30)
+    equal(old.status,'invalidated');equal(old.child,nil);equal(gui:get().request,nil);equal(#f.adds,0)
+    tick=tick+1;untilState(function(s) return s.status=='idle' end)
+    event('status',{openRouteView=true});assert(stationSubmit(gui,event).accepted);untilState(completed);untilState(routeShown)
+    worldId=101;step(100);assert(noZones(f));equal(gui:get().request,nil)
+end)
+test('stations: sixty-second shared budget applies across site selection and corridor pairs',function()
+    local gui,step,untilState,event,f=stationSession();assert(stationSubmit(gui,event).accepted);step(5)
+    clock=62;untilState(completed);equal(gui:get().request.status,'invalidated')
+    assert(hasLog('station_snapshot_invalidated_expired'));equal(gui:get().request.result,nil)
+end)
+test('stations: world evidence changes before final publishing reject stale reservations',function()
+    local gui,step,untilState,event,f=stationSession();assert(stationSubmit(gui,event).accepted)
+    untilState(function(s) return s.request and s.request.phase=='verify' end)
+    f.station.add(9999,{-1800,-900,1800,900},{})
+    untilState(completed);equal(gui:get().request.status,'unsupported');assert(hasLog('station_reservation_changed'));equal(#f.adds,0)
+end)
+test('stations: deleted selected town during site processing invalidates rather than substituting an anchor',function()
+    local gui,step,untilState,event,f=stationSession();assert(stationSubmit(gui,event).accepted)
+    untilState(function(s) return s.request and s.request.phase=='sites' end);entities[10]=nil
+    untilState(completed);equal(gui:get().request.status,'invalidated');equal(gui:get().request.result,nil)
+end)
+test('stations: busy and replay guards preserve one explicit request and at most two sequential corridor continuations',function()
+    local gui,step,untilState,event,f=stationSession();local s=gui:get()
+    local payload={world=s.world,epoch=s.epoch,requestId=1,sourceId=10,destinationId=20,stationAware=true}
+    assert(event('plan',payload).accepted);equal(event('plan',payload).accepted,false)
+    local maxReads=0
+    for _=1,3000 do
+        if completed(gui:get()) then break end
+        local before=heightReads;step();maxReads=math.max(maxReads,heightReads-before)
+        local r=gui:get().request;if r.child then equal(r.child.stationAware,nil) end
+    end
+    assert(completed(gui:get()));assert(maxReads<=16);assert(logCount('PAIR index=')<=2)
+    equal(event('plan',payload).accepted,false);equal(logCount('[RNA:STATION] START'),1)
+    local before=serialize(gui:get().request.result.candidates)
+    assert(stationSubmit(gui,event).accepted);untilState(completed)
+    equal(serialize(gui:get().request.result.candidates),before);equal(f.commands,0)
+end)
+test('stations: original town pair remains independent from explicit station coordinates',function()
+    local gui,step,untilState,event,f=stationSession();assert(stationSubmit(gui,event).accepted)
+    untilState(function(s) return s.request and s.request.child and s.request.child.pair end)
+    local child=gui:get().request.child;equal(child.townPair.start.x,entities[10].x)
+    equal(child.pair.start.x,child.anchorOverride.start.x)
+    assert(child.pair.start.x~=child.townPair.start.x or child.pair.start.y~=child.townPair.start.y)
+    equal(child.layout.start.distance,0);equal(child.layout.destination.distance,0)
+end)
+test('stations: long-distance station pair uses the authoritative hierarchy and preserves approaches',function()
+    local gui,step,untilState,event,f=stationSession(function()
+        entities[10].x=-3000;entities[20].x=3000
+        mapBounds={minX=-8000,maxX=8000,minY=-4096,maxY=4096}
+    end)
+    assert(stationSubmit(gui,event).accepted);untilState(completed)
+    local r=gui:get().request;equal(r.status,'ok');assert(hasLog('LONG_DISTANCE mode=hierarchical'))
+    assert(r.preview);equal(r.preview.candidates[1].spacing,64)
+    for _,c in ipairs(r.result.candidates) do equal(c.waypoints[1].x,c.stationSites.source.approach.x) end
+end)
+test('stations: alternate UI uses actual station pair metadata and has no automatic site or corridor work',function()
+    local gui,step,untilState,event,f=stationSession();entities[10].name='Same';entities[20].name='Same'
+    local render,poll,tree,controls=mountUI(true);controls.launcher.params.onClick();tree=render()
+    find(tree,'ComboBox')[1].params.onValueChange('10');find(tree,'ComboBox')[2].params.onValueChange('20');tree=render()
+    equal(heightReads,0);equal(gui:get().request,nil)
+    find(tree,'Button','Plan Railway')[1].params.onClick();render();untilState(completed);untilState(routeShown);poll();tree=render()
+    local txt=panelText(tree);assert(txt:find('Station near Same (orange)',1,true));assert(txt:find('Station near Same (purple)',1,true))
+    local p=gui:get().request.preview;equal(p.source.id,10);equal(p.destination.id,20)
+    if #p.candidates>1 then
+        local calls=heightReads;find(tree,'ComboBox')[3].params.onValueChange(p.candidates[2].id);render();untilState(routeShown)
+        equal(heightReads,calls);equal(gui:get().routeOverlay.candidateId,p.candidates[2].id)
+    end
+    controls.panel.params.onClose();controls.flush();step(100);assert(noZones(f))
+end)
+test('stations: failure while drawing a station polygon clears the already submitted cyan path and all owned markers',function()
+    local gui,step,untilState,event,f=stationSession();assert(stationSubmit(gui,event).accepted)
+    local setZone=api.gui.mission.setZone
+    api.gui.mission.setZone=function(key,poly,draw,color,...)
+        setZone(key,poly,draw,color,...)
+        if color.x==.9 then error('station marker renderer failure') end
+    end
+    untilState(completed);step(200)
+    equal(gui:get().routeOverlay.status,'error');assert(noZones(f));equal(f.commands,0)
+    assert(hasLog('station marker renderer failure'))
+end)
 print('PASS '..passed..' live planning/UI tests (mocked engine and React, not TF3 runtime verification)')

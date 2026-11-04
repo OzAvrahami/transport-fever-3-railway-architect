@@ -47,13 +47,13 @@ local PlannerWindow = react.RegisterWrapperRecipe("OzRailwayNetworkArchitectWind
             if problem then
                 error("api.gui.fireGuiScriptEvent: planner response unavailable; " .. problem, 0)
             end
-            if value.testTrack ~= nil then
-                local t=value.testTrack
-                local statuses={idle=true,preparing=true,confirm=true,cancelled=true,expired=true,building=true,built=true,failed=true,unverified=true}
+            if value.routeOverlay ~= nil then
+                local t=value.routeOverlay
+                local statuses={idle=true,hidden=true,rendering=true,shown=true,unsupported=true,error=true}
                 if type(t)~="table" or not flow.id(t.sequence) or not statuses[t.status]
-                    or type(t.attempted)~="boolean" or type(t.eligible)~="boolean"
-                    or (t.status=="confirm" and not flow.id(t.confirmId)) then
-                    error("api.gui.fireGuiScriptEvent: invalid test-track response",0)
+                    or (t.lease~=nil and not flow.id(t.lease))
+                    or (t.candidateId~=nil and type(t.candidateId)~="string") then
+                    error("api.gui.fireGuiScriptEvent: invalid route-overlay response",0)
                 end
             end
             local count = 0
@@ -138,6 +138,11 @@ local PlannerWindow = react.RegisterWrapperRecipe("OzRailwayNetworkArchitectWind
             -- documented main-thread join, also for mount and user actions.
             react.enqueueJoin(function()
                 if not isLive() then return end
+                local latest=current:get()
+                if name=="status" and latest and latest.routeOverlay then
+                    request.routeLease=latest.routeOverlay.lease
+                    if params.development~=true and not latest.routeOverlay.lease then request.openRouteView=true end
+                end
                 local trace = params.nextTrace()
                 request._rnaTrace = trace
                 local function traceEvent(message)
@@ -170,8 +175,18 @@ local PlannerWindow = react.RegisterWrapperRecipe("OzRailwayNetworkArchitectWind
             end, "RNA:PLAN:4B2:" .. name)
         end
 
-        react.onMount(function() send("status", {}) end)
+        react.onMount(function() send("status", {openRouteView=params.development~=true}) end)
         react.onUnmount(function()
+            -- Teardown cannot use send(): its live-view guard correctly rejects unmounted UI.
+            -- This join only releases the captured owner lease, never updates React or shows geometry.
+            local last=not current:hasExpired() and current:get()
+            if params.development~=true and last and last.routeOverlay and last.routeOverlay.lease then
+                local envelope={world=last.world,epoch=last.epoch,overlay={action="close",lease=last.routeOverlay.lease}}
+                react.enqueueJoin(function()
+                    local ok,err=pcall(function() api.gui.fireGuiScriptEvent(eventId,eventId..".plan",envelope) end)
+                    if not ok then debugPrint("[RNA:ROUTE] CLEANUP_DISPATCH_ERROR "..flow.text(err)) end
+                end,"RNA:ROUTE:close")
+            end
             if not alive:hasExpired() then alive:set(false) end
             params.onDetached()
         end)

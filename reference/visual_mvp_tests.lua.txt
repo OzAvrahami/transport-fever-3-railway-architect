@@ -1,0 +1,208 @@
+-- Native command fixtures never execute TF3. They explicitly queue the documented GUI callback.
+local function trackFixture()
+    local f={commands={},callbacks={},records={},hits={},focus=0,camera={x=1000,y=0},resourceMissing=false}
+    local component,exists=api.engine.getComponent,api.engine.entityExists
+    api.type.ComponentType.BASE_EDGE,api.type.ComponentType.BASE_NODE="edge","node"
+    api.type["enum"]={RoadType={TRACK="track"},BaseEdgeType={NORMAL="normal"},TransportMode={TRAIN="train"}}
+    api.type.Vec3f={new=function(x,y,z) return {x=x,y=y,z=z} end}
+    api.type.Box3={new=function(a,b) return {min=a,max=b} end}
+    api.type.SimpleProposal={new=function() return {streetProposal={}} end}
+    api.type.NodeAndEntity={new=function() return {comp={}} end}
+    api.type.SegmentAndEntity={new=function() return {comp={}} end}
+    api.type.Context={new=function() return {} end}
+    f.template={roadType="track",streetStyle="::/infrastructure/track/simple/simple.street",
+        laneConfigs={{width=4,speed=27.777,transportModes={train=true},height=0.53,offset=0,forward=true}}}
+    api.res={streetTemplateRep={find=function(name)
+        equal(name,"::/infrastructure/track/simple/simple.street_template");return f.resourceMissing and -1 or 7
+    end,get=function(id) equal(id,7);return f.template end},streetStyleRep={find=function(name)
+        equal(name,"::/infrastructure/track/simple/simple.street");return 8 end}}
+    api.engine.util.getPlayer=function() return 800 end
+    api.engine.entityExists=function(id) return id==800 or f.records[id]~=nil or exists(id) end
+    api.engine.getComponent=function(id,kind) return f.records[id] and f.records[id][kind] or component(id,kind) end
+    api.engine.system.octreeSystem={findIntersectingEntities=function(box,callback)
+        equal(box.min.x,940);equal(box.max.x,1060)
+        for _,id in ipairs(f.hits) do callback(id,{}) end
+    end}
+    api.gui.camera={getCameraData=function() return f.camera end,
+        focusPosition=function(p,d) f.focus=f.focus+1;equal(p.x,1000);equal(d,180) end}
+    api.cmd={makeWorldBuildProposalCmd=function(p,c,ignore,player)
+        equal(ignore,false);equal(player,true);equal(c.player,800)
+        equal(c.checkTerrainAlignment,true);equal(c.cleanupStreetGraph,false)
+        equal(c.gatherBuildings,false);equal(c.gatherFields,false)
+        equal(#p.streetProposal.nodesToAdd,2);equal(#p.streetProposal.edgesToAdd,1)
+        for _,k in ipairs({"nodesToRemove","edgesToRemove","edgeObjectsToRemove","nodeConfigsToRemove"}) do equal(#p.streetProposal[k],0) end
+        equal(#p.constructionsToAdd,0);equal(#p.constructionsToRemove,0);equal(next(p.old2new),nil)
+        return {proposal=p,context=c}
+    end,sendCommand=function(cmd,callback)
+        f.commands[#f.commands+1]=cmd;f.callbacks[#f.callbacks+1]=callback
+        if f.sendThrows then error("synthetic ambiguous send failure") end
+    end}
+    function f.complete(success,mode)
+        local cmd=f.commands[#f.commands];local e=cmd.proposal.streetProposal.edgesToAdd[1].comp
+        local c={};for k,v in pairs(e) do c[k]=v end;c.node0=901;c.node1=902
+        f.records[900]={edge=c};f.records[901]={node={position=c.position0}};f.records[902]={node={position=c.position1}}
+        if mode=="missing" then f.records[900]=nil end
+        if mode=="wrong" then c.roadType="street" end
+        if mode=="position" then c.position0={x=999,y=0,z=-2} end
+        f.callbacks[#f.callbacks]({resultEntities={{900,{}},{901,{}},{902,{}}},
+            resultProposalData={errorState={messages=success and {} or {"native_collision_fixture"}}}},success)
+    end
+    return f
+end
+local function trackToken(gui,action)
+    local s=gui:get()
+    return {world=s.world,epoch=s.epoch,track={action=action,requestId=(s.trackSequence or 0)+1,
+        corridorRequestId=s.requestId,confirmId=s.testTrack and s.testTrack.id,disposableCopy=action=="confirm"}}
+end
+local function preparedTrack()
+    local gui,step,untilState,event,callbacks=completedSession();local f=trackFixture()
+    assert(event("plan",trackToken(gui,"prepare")).accepted);equal(gui:get().testTrack.status,"confirm")
+    return gui,step,untilState,event,f,callbacks
+end
+
+test("player UI: compact controls, duplicate town names without raw IDs, and no automatic commands",function()
+    local gui,step,untilState,event=newSession();ready(step,untilState);local f=trackFixture()
+    local render,poll,tree,controls=mountUI(true);controls.launcher.params.onClick();tree=render()
+    equal(#find(tree,"ComboBox"),2);equal(#find(tree,"Button"),3) -- launcher plus two actions
+    equal(#find(tree,"Button","Plan Railway"),1);equal(#find(tree,"Button","Build Test Track"),1)
+    equal(find(tree,"Button","Build Test Track")[1].params.meta.enabled,false)
+    local content=panelText(tree)
+    for _,word in ipairs({"#10","#20","snapshot","score","revision","Analyze Network","Inspect Geometry"}) do assert(not content:find(word,1,true)) end
+    local a=find(tree,"ComboBox")[1];local b=find(tree,"ComboBox")[2]
+    a.params.onValueChange("10");b.params.onValueChange("20");tree=render()
+    step(10);equal(#f.commands,0);equal(gui:get().request,nil)
+    find(tree,"Button","Plan Railway")[1].params.onClick();render();untilState(completed);poll();tree=render()
+    assert(panelText(tree):find("Route found",1,true));equal(#f.commands,0)
+    assert(find(tree,"Button","Build Test Track")[1].params.meta.enabled)
+    find(tree,"ComboBox")[1].params.onValueChange("");tree=render()
+    equal(find(tree,"Button","Build Test Track")[1].params.meta.enabled,false)
+end)
+
+test("track: prepare and cancel are read-only; confirmation must identify a disposable copy",function()
+    local gui,step,untilState,event,f=preparedTrack()
+    equal(#f.commands,0);equal(f.focus,1)
+    local no=trackToken(gui,"confirm");no.track.disposableCopy=false
+    equal(event("plan",no).reason,"explicit_disposable_confirmation_required");equal(#f.commands,0)
+    assert(event("plan",trackToken(gui,"cancel")).accepted);equal(gui:get().testTrack.status,"cancelled")
+    step(20);equal(#f.commands,0)
+    assert(event("plan",trackToken(gui,"prepare")).accepted);equal(gui:get().testTrack.status,"confirm")
+end)
+
+test("track: one native straight proposal per confirmation and verified new edge and nodes",function()
+    local gui,step,untilState,event,f=preparedTrack();local click=trackToken(gui,"confirm")
+    local before=serialize(gui:get().request)
+    assert(event("plan",click).accepted);equal(gui:get().testTrack.status,"building");equal(#f.commands,1)
+    equal(event("plan",click).accepted,false);equal(event("plan",trackToken(gui,"confirm")).accepted,false)
+    local p=f.commands[1].proposal;local e=p.streetProposal.edgesToAdd[1]
+    equal(e.entity,-1);equal(e.type,1);equal(e.comp.node0,-3);equal(e.comp.node1,-4)
+    equal(e.comp.tangent0.x,80);equal(e.comp.tangent1.x,80);equal(e.comp.type,"normal")
+    equal(p.streetProposal.nodesToAdd[1].comp.position.x,960)
+    equal(p.streetProposal.nodesToAdd[2].comp.position.x,1040)
+    equal(submit(gui,event).reason,"busy");equal(analyze(gui,event).reason,"busy")
+    f.complete(true);equal(gui:get().testTrack.status,"built");equal(gui:get().testTrack.entity,900)
+    equal(serialize(gui:get().request),before);equal(f.focus,2)
+    equal(event("plan",trackToken(gui,"prepare")).reason,"one_attempt_per_loaded_session")
+    step(20);equal(#f.commands,1);equal(logCount("[RNA:BUILD:MVP] VERIFIED"),1)
+end)
+
+test("track: native failures report actual messages and never silently retry",function()
+    local gui,step,untilState,event,f=preparedTrack()
+    assert(event("plan",trackToken(gui,"confirm")).accepted);f.complete(false)
+    equal(gui:get().testTrack.status,"failed");assert(hasLog("native_collision_fixture"))
+    step(50);equal(#f.commands,1);equal(gui:get().testTrack.entity,nil)
+    equal(event("plan",trackToken(gui,"prepare")).accepted,false)
+end)
+
+test("track: successful callback alone never proves track existence or geometry",function()
+    for _,mode in ipairs({"missing","wrong","position"}) do
+        local gui,step,untilState,event,f=preparedTrack();event("plan",trackToken(gui,"confirm"));f.complete(true,mode)
+        equal(gui:get().testTrack.status,"unverified");equal(gui:get().testTrack.entity,nil);equal(f.focus,1)
+        assert(hasLog("VERIFY_FAILED"));equal(#f.commands,1)
+    end
+end)
+
+test("track: stale confirmation, world reset and late callbacks cannot construct or restore old state",function()
+    for _,when in ipairs({"before","after"}) do
+        local gui,step,untilState,event,f,cb=preparedTrack();local token=trackToken(gui,"confirm")
+        if when=="after" then event("plan",token) end
+        cb.guiHandleEvent(nil,nil,gui,"test","gameUI","reactPostInit",{})
+        equal(event("plan",token).accepted,false)
+        if when=="after" then f.complete(true);assert(hasLog("STALE_CALLBACK_DISCARDED")) end
+        equal(gui:get().testTrack,nil);equal(#f.commands,when=="after" and 1 or 0)
+    end
+end)
+
+test("track: confirmation expires without commands and resource or occupied sites fail safely",function()
+    local gui,step,untilState,event,f=preparedTrack();clock=clock+31;step()
+    equal(gui:get().testTrack.status,"expired");equal(event("plan",trackToken(gui,"confirm")).accepted,false);equal(#f.commands,0)
+    for _,mode in ipairs({"resource","style","lane","occupied","water","steep","missing","camera"}) do
+        gui,step,untilState,event=completedSession();f=trackFixture()
+        if mode=="resource" then f.resourceMissing=true
+        elseif mode=="style" then f.template.streetStyle="wrong"
+        elseif mode=="lane" then f.template.laneConfigs[1].width=0
+        elseif mode=="occupied" then f.hits={900};f.records[900]={edge={}}
+        elseif mode=="water" then api.engine.terrain.isOnWater=function() return true end
+        elseif mode=="steep" then api.engine.terrain.getHeightAt=function(p) return p.x end
+        elseif mode=="camera" then f.camera.x=0/0
+        else api.engine.terrain.getHeightAt=function() return nil end end
+        event("plan",trackToken(gui,"prepare"));equal(gui:get().testTrack.status,"failed");equal(#f.commands,0)
+    end
+end)
+
+test("track: confirmation rechecks terrain, occupancy, resource and observed work budget",function()
+    for _,mode in ipairs({"terrain","occupied","resource","slow"}) do
+        local gui,step,untilState,event,f=preparedTrack()
+        if mode=="terrain" then api.engine.terrain.getHeightAt=function() return -1.9 end
+        elseif mode=="occupied" then f.hits={900};f.records[900]={edge={}}
+        elseif mode=="resource" then f.resourceMissing=true else clockStep=0.1 end
+        event("plan",trackToken(gui,"confirm"));equal(gui:get().testTrack.status,"failed")
+        equal(#f.commands,0);equal(gui:get().trackAttempted,true)
+    end
+end)
+
+test("track: ambiguous dispatch exceptions lock out further attempts",function()
+    local gui,step,untilState,event,f=preparedTrack();f.sendThrows=true
+    event("plan",trackToken(gui,"confirm"));equal(gui:get().testTrack.status,"unverified")
+    f.complete(true);equal(gui:get().testTrack.status,"unverified")
+    equal(event("plan",trackToken(gui,"prepare")).accepted,false);equal(#f.commands,1)
+end)
+
+test("track: world change during command preparation prevents dispatch",function()
+    local gui,step,untilState,event,f=preparedTrack()
+    local make=api.cmd.makeWorldBuildProposalCmd
+    api.cmd.makeWorldBuildProposalCmd=function(...)
+        local command=make(...);worldId=100;return command
+    end
+    event("plan",trackToken(gui,"confirm"))
+    equal(#f.commands,0);assert(hasLog("world_changed_before_send"))
+end)
+
+test("player UI: explicit confirmation, cancelled queued close and simple success text",function()
+    local gui,step,untilState,event=newSession();ready(step,untilState);local f=trackFixture()
+    local render,poll,tree,controls=mountUI(true);controls.launcher.params.onClick();tree=render()
+    find(tree,"ComboBox")[1].params.onValueChange("10");find(tree,"ComboBox")[2].params.onValueChange("20");tree=render()
+    find(tree,"Button","Plan Railway")[1].params.onClick();render();untilState(completed);poll();tree=render()
+    find(tree,"Button","Build Test Track")[1].params.onClick();tree=render()
+    equal(#f.commands,0);assert(panelText(tree):find("This changes the map",1,true))
+    local label="This is my disposable copy — build one track"
+    local confirm=find(tree,"Button",label)[1].params.onClick
+    controls.autoJoin=false;confirm();controls.panel.params.onClose();controls.flush();equal(#f.commands,0)
+    controls.autoJoin=true;controls.launcher.params.onClick();tree=render()
+    confirm=find(tree,"Button",label)[1].params.onClick;confirm();confirm();tree=render();equal(#f.commands,1)
+    f.complete(true);poll();tree=render();assert(panelText(tree):find("Track built successfully",1,true))
+    equal(find(tree,"Button","Build Test Track")[1].params.meta.enabled,false)
+end)
+
+test("player UI: no stale success on reopen and malformed build status stops polling",function()
+    local gui,step,untilState,event,f=preparedTrack();event("plan",trackToken(gui,"confirm"));f.complete(true)
+    local render,poll,tree,controls=mountUI(true);controls.launcher.params.onClick();tree=render()
+    assert(panelText(tree):find("Track built successfully",1,true))
+    controls.panel.params.onClose();render();controls.autoJoin=false
+    controls.launcher.params.onClick();tree=render();assert(not panelText(tree):find("Track built successfully",1,true))
+    worldId=100;controls.flush();tree=render();assert(not panelText(tree):find("Track built successfully",1,true))
+    controls.autoJoin=true;controls.resultFilter=function(v) v.testTrack.status="fabricated";return v end
+    poll();tree=render();assert(panelText(tree):find("Connection lost",1,true))
+    local n=#controls.events;poll();equal(#controls.events,n)
+end)
+
+print("PASS " .. passed .. " live planning/UI tests (mocked engine and React, not TF3 runtime verification)")

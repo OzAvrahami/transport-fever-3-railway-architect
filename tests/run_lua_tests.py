@@ -14,6 +14,9 @@ for path in files:
     source = path.read_text(encoding="utf-8")
     assert not source.startswith("\ufeff"), f"BOM: {path}"
     compile_lua(source, str(path))
+    if package in path.parents:
+        assert not re.search(r"api\.cmd\.(?:sendCommand|makeWorldBuildProposalCmd)\s*\(", source), path
+        assert "track_test.lua" not in source, path
     for ref in re.findall(r'oz_railway_network_architect::/([^"\s]+)', source):
         resource = ref.split("@")[0]
         if "@" in ref:
@@ -30,7 +33,7 @@ print("PASS UTF-8 without BOM and JSON syntax")
 manifest = json.loads((package / "mod.json").read_text(encoding="utf-8"))
 metadata = json.loads((package / "_metadata/modinfo.json").read_text(encoding="utf-8"))
 assert manifest["modId"] == "oz_railway_network_architect" and manifest["revision"] == 1
-assert manifest["cosmetic"] is False, "Confirmed construction must not be marked cosmetic"
+assert manifest["cosmetic"] is True, "The active mod is read-only again"
 assert metadata["name"] == "Railway Network Architect"
 read_descriptor = lua.eval("""function(source)
     local env = {}

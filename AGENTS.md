@@ -2,39 +2,44 @@
 
 ## Current milestone
 
-Visual Railway MVP: a compact player interface and ONE explicitly confirmed native
-track experiment. This owner authorization supersedes earlier milestone construction
-prohibitions ONLY for content/track_test.lua. Do not execute construction during
-development. Stop for review; the owner installs and tests a disposable save copy.
-No staging deployment, commits, tags, pushes, automatic retries or corridor construction.
+Visible Route Preview: read-only world-space alignment display. Construction authorization
+is revoked. The earlier test-track experiment is archived outside the deployable mod
+under reference/ and must never be imported by a live script. Reject its event envelope.
+No sendCommand, WorldBuildProposal, construction tools, ProposalViewer, terrain changes,
+stations, staging deployment, commits, tags or pushes. Stop for owner review and one
+Midhurst-to-Goole native visibility test.
 
-- Preserve the launcher, centered window, five subscriptions and existing GUI owner.
-  Player controls are Source town, Destination town, Plan Railway, simple status and
-  Build Test Track. Keep technical details in logs. Legacy analytics controls remain
-  only behind the development recipe parameter for regression fixtures, never enabled
-  by the production launcher. Preserve their algorithms and regression tests.
-- Plan Railway is read-only. Build Test Track first checks the camera-centred site,
-  then requires the explicit disposable-copy confirmation. Only the confirmed action
-  may create and send one native command. Never infer that a save is disposable.
-- Use the shipped native SimpleProposal/NodeAndEntity/SegmentAndEntity pattern and
-  verified base-game simple track resource. One 80 m straight NORMAL track, two new
-  negative-ID nodes, no removal lists, no connections or stations, ignoreErrors=false.
-  Revalidate resource, terrain, occupancy and world before dispatch. Never force errors.
-- Keep sequence/session/corridor checks, a 30-second confirmation deadline and one
-  accepted attempt per loaded session. No commands on load, polling, selection,
-  Plan, network analysis or geometry inspection. No silent relocation or retry.
-- Native GUI commands execute later. Submitted commands have no implemented cancellation
-  or rollback: reject stale callbacks, never retry an ambiguous result, and instruct the
-  owner to wait for the terminal callback before reloading. A success callback alone
-  is insufficient: verify the returned TRACK edge and both nodes through engine reads.
-- Preserve all planning, network, geometry and inventory modules. The existing curve
-  fitter may check this straight test geometry; symbolic offline descriptors are not
-  native proposals. Historical limits below still apply to their respective modules.
-- Native acceptance is pending. Do not claim visible track placement from mocks.
-  See docs/visual_railway_mvp.md for exact contracts, limits and the one-session test.
-
-The authoritative planner remains content/planning/ inside the mod. Standard/Exploratory
-network preferences and all worklist/batch/freshness safeguards remain unchanged internally.
+- Preserve the small native window, launcher, five subscriptions and request owner.
+  Player controls: town selectors, Plan Railway, simple status, Hide/Show/Focus Route
+  and a small alternative selector. No developer diagnostics or build controls.
+- route_overlay.lua is the sole keyed-zone owner. Use documented GUI mission setZone
+  with draw=true, prohibitBuilding=false, playAnimation=false and an explicit 1 m offset.
+  Use matching removeZone keys in the mod namespace only. No world entity deletion.
+- Render each original consecutive XY segment as a cyan 24 m-wide terrain ribbon.
+  No simplification, route shortening, A* rerun or invented alignment. Z is projected
+  onto the native terrain; this is a proposed corridor, not track or final rail geometry.
+- Require a terminal complete/ok candidate from the authoritative current request.
+  Reject more than 1,024 segments without truncation. Process at most 16 zone operations
+  per GUI callback, with the existing 50 ms observed-work guard (not preemption).
+- Keep all route arrays in the Game Script owner. Polling transfers only compact state,
+  IDs and existing candidate summaries. The existing plan event carries overlay actions;
+  no new subscriptions, global mutable state or cross-script snapshots.
+- Own zones with a server-issued view lease. Teardown queues main-thread cleanup;
+  expire after five seconds without the normal status heartbeat as a fallback.
+  Preserve world/epoch/request/sequence checks. Close/reload cancels pending drawing;
+  reopen requires an explicit Show for old results. Cleanup precedes replacements.
+- Partial rendering is labelled Showing route. On any rendering error clear partial
+  owned zones and log the exact API failure. Failed removal pauses to avoid an error
+  storm; retain those keys for a bounded explicit retry or reset, never silently forget.
+- EdgeRenderable's native types are known, but a supported mod renderer/action ownership
+  path is not established. Internal useAction/setActiveOwner is not permission to take
+  over native tools. Do not use it or ProposalViewer as a speculative fallback.
+- The public zone contract and shipped GUI-state calls are verified; their native
+  implementation and ordinary-freeplay visibility are not proven by source or mocks.
+  Do not claim acceptance until the owner sees the route while moving the camera.
+- Preserve all accepted planners, inventories, worklists, batch and geometry algorithms.
+  Legacy developer UI tests remain; obsolete construction tests are archived separately.
+  The authoritative planner remains content/planning/ inside the mod.
 
 Topology studies consider supplied demand evidence, distance, geography and transport
 alternatives. A city or industry does not automatically need rail. Economic feasibility
@@ -328,16 +333,14 @@ and actual construction remain unverified; scores are explicit planning preferen
 ## Safety and scope
 
 - Treat installed game files, shipped examples and API definitions as read-only.
-- During development, do not execute world-changing commands or change simulation
-  configuration. The sole implemented runtime exception is the explicit confirmed
-  test-track path described above; no other module may send construction commands.
+- Do not execute or expose world-changing commands or change simulation configuration.
+  No active module may create or send construction commands.
 - Do not persist mod state or modify user saves in this milestone.
 - Do not install or overwrite a local mod copy without a user request to do so.
   Document installation steps for the user instead.
 - Do not publish, upload, commit or push without explicit user authorization.
-- `cosmetic=false` is required now. Add/remove severity stays None: loading adds no
-  world changes, and the isolated experiment uses only base-game resources, not custom
-  assets needed after removal. Native save/remove compatibility still needs testing.
+- The deployable mod is read-only again: cosmetic=true; add/remove severity None.
+  Zone drawing must never prohibit building or persist simulation/save state.
 - Keep changes small and report verified behavior separately from assumptions.
 
 <!-- OCTOCODE-GLOBAL-START -->

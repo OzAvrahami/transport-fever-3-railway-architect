@@ -1,12 +1,14 @@
 {
   "name": "Railway Network Architect",
-  "summary": "Plan railway corridors and explicitly test one real track segment on a disposable save copy.",
-  "description": "Plan Railway only studies terrain. Build Test Track is a separate confirmed experiment that changes the map and may adjust terrain and charge the company. Use only a disposable save copy. No automatic construction, stations, bulldozing or full-route building. Development diagnostics are logged.",
+  "summary": "Plan railway corridors and show their proposed alignment on the map.",
+  "description": "Choose two towns and Plan Railway. Completed corridors are displayed as temporary cyan terrain ribbons. Hide, show, choose a route or focus the camera without rebuilding the plan. No track construction, terrain changes or automatic network building.",
   "authors": [
     {
       "name": "oz",
       "role": "CREATOR"
     }
   ],
-  "tags": ["Script Mod"]
+  "tags": [
+    "Script Mod"
+  ]
 }

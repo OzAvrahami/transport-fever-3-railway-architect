@@ -7,7 +7,7 @@ local handoff = ug_require "oz_railway_network_architect::/network_corridor_hand
 local worklist = ug_require "oz_railway_network_architect::/network_worklist.lua"
 local batch = ug_require "oz_railway_network_architect::/network_batch.lua"
 local geometry = ug_require "oz_railway_network_architect::/live_plan_geometry.lua"
-local track = ug_require "oz_railway_network_architect::/track_test.lua"
+local overlay = ug_require "oz_railway_network_architect::/route_overlay.lua"
 local config = flow.config()
 local eventId = "oz_railway_network_architect.plan"
 local prefix = "[RNA:PLAN:4B2] "
@@ -26,7 +26,9 @@ local function reset(state, reason)
     if state.network then network.invalidate(state.network, reason) end
     if state.request then request.invalidate(state.request, reason) end
     report("SESSION_RESET reason=" .. flow.text(reason))
-    return newState(state)
+    local nextState=newState(state)
+    nextState.routeOverlay=overlay.reset(state)
+    return nextState
 end
 
 local function synchronize(state)
@@ -43,6 +45,7 @@ local function synchronize(state)
 end
 
 local function startCatalog(state)
+    overlay.clear(state,"idle")
     state.inspection = nil
     state.batch = nil
     state.catalog = {cursor = 1, towns = {}, rejected = 0, errors = 0}
@@ -87,7 +90,7 @@ local function collect(state)
 end
 
 local function busy(state)
-    return track.busy(state) or geometry.running(state.inspection) or batch.running(state.batch) or (state.request ~= nil and not state.request.finished)
+    return geometry.running(state.inspection) or batch.running(state.batch) or (state.request ~= nil and not state.request.finished)
         or (state.network ~= nil and not state.network.finished)
 end
 
@@ -99,7 +102,7 @@ local function response(state, accepted, reason)
     return {epoch = state.epoch, world = state.world, tick = state.tick, listVersion = state.listVersion,
         requestId = state.requestId, accepted = accepted, reason = reason, towns = towns,
         status = state.status, message = state.message, busy = busy(state),
-        testTrack = track.summary(state),
+        routeOverlay = overlay.summary(state),
         networkRequestId = state.networkRequestId,
         batchRequestId = state.batchRequestId, batch = batch.summary(state.batch),
         inspectionRequestId = state.inspectionRequestId or 0, inspection = geometry.summary(state.inspection, state),
@@ -119,7 +122,6 @@ local function response(state, accepted, reason)
 end
 
 local function update(state)
-    track.expire(state)
     if not state.checked then
         local reason = flow.checkConfig(config) or adapter.check()
         if reason then error(reason, 0) end
@@ -136,10 +138,11 @@ local function update(state)
         report("UI_SESSION_READY status=waiting request=none communication=trace-v1 handler=guiHandleEvent")
     end
     state.polls = state.polls + 1
-    local active = state.catalog or busy(state)
+    local active = state.catalog or busy(state) or overlay.working(state)
     if not active and state.polls ~= 1 and state.polls % 30 ~= 0 then return state end
     local world
     state, world = synchronize(state)
+    overlay.step(state)
     if not world or not state.ready then return state end
     if state.status == "waiting" then startCatalog(state) end
     if state.catalog and state.polls % 4 == 0 then
@@ -156,9 +159,10 @@ local function update(state)
             -- or unfinished section. Existing status transport carries only this DTO.
             local previewReason
             r.preview, previewReason = preview.build(state)
+            overlay.completed(state)
             debugPrint("[RNA:PREVIEW:4B4] PANEL_SUMMARY request=" .. state.requestId
                 .. " candidates=" .. (r.preview and #r.preview.candidates or 0)
-                .. " reason=" .. (previewReason or "complete_snapshot") .. " map_overlay=false")
+                .. " reason=" .. (previewReason or "complete_snapshot") .. " rendering=separate_zone_owner")
             local messages = {ok = "Completed", incomplete = "Completed with missing data",
                 unreachable = "No route through the sampled region", unsupported = "These anchors cannot be represented adequately",
                 invalidated = "Map data changed; please try again", performance_limit = "Work budget exceeded; review required",
@@ -221,6 +225,7 @@ function data()
             if not state or not state.epoch then state = newState() end
             local ok, updated = pcall(update, state)
             if ok then state = updated else
+                overlay.clear(state,"error")
                 geometry.stop(state.inspection, "error", "session_update_failed")
                 batch.stop(state.batch, "stopped", "session_update_failed")
                 if state.request then request.invalidate(state.request, "session_update_failed") end
@@ -275,18 +280,21 @@ function data()
             local accepted, reason = false, nil
             local ok, detail = pcall(function()
                 state = synchronize(state)
-                track.expire(state)
-                if name == "status" then return end
+                if name == "status" then
+                    if type(param)=="table" and param.openRouteView==true then overlay.open(state) end
+                    if type(param)=="table" then overlay.heartbeat(state,param.routeLease) end
+                    return
+                end
                 if type(param) == "table" and param.track ~= nil then
+                    reason="construction_disabled";return
+                end
+                if type(param) == "table" and param.overlay ~= nil then
                     if name ~= "plan" or param.inspection ~= nil or param.batch ~= nil or param.worklist ~= nil
                         or param.network ~= nil or param.requestId ~= nil or param.sourceId ~= nil or param.destinationId ~= nil then
-                        reason="invalid_track_envelope";return
+                        reason="invalid_route_envelope";return
                     end
                     if param.world~=state.world or param.epoch~=state.epoch then reason="stale_session";return end
-                    if not state.ready or state.catalog then reason="not_ready";return end
-                    if geometry.running(state.inspection) or batch.running(state.batch)
-                        or (state.request and not state.request.finished) or (state.network and not state.network.finished) then reason="busy";return end
-                    accepted,reason=track.handle(state,param.track,guiState);return
+                    accepted,reason=overlay.handle(state,param.overlay);return
                 end
                 if type(param) == "table" and param.inspection ~= nil then
                     if name ~= "plan" or param.batch ~= nil or param.worklist ~= nil or param.network ~= nil
@@ -367,6 +375,7 @@ function data()
                 if not state.ready or state.catalog or (state.status == "error" and not state.request) then reason = "not_ready"; return end
                 -- Consume the click token even on validation failure; replay cannot restart work.
                 state.requestId = param.requestId
+                overlay.clear(state,"hidden")
                 state.inspection = nil
                 local sourceId, destinationId, origin = param.sourceId, param.destinationId, nil
                 if param.network ~= nil then

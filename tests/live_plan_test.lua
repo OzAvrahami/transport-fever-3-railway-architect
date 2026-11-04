@@ -472,7 +472,7 @@ local function mountUI(playerView)
             equal(interval, 0.5); equal(jitter, false); active.timer = fn
         end,
         enqueueJoin = function(fn, scope)
-            assert(scope:find("RNA:PLAN:4B2:", 1, true)); controls.joins[#controls.joins + 1] = fn
+            assert(scope:find("RNA:PLAN:4B2:", 1, true) or scope=="RNA:ROUTE:close"); controls.joins[#controls.joins + 1] = fn
         end,
         iaHandler = function(fn) return fn end,
         useInputAction = function(name, fn) equal(name, "IA_MENU_BACK"); active.back = fn end,
@@ -2917,211 +2917,301 @@ test("network modes: repeated results deterministic and malformed mode summary i
     equal(gui:get().network,nil)
 end)
 
--- Native command fixtures never execute TF3. They explicitly queue the documented GUI callback.
-local function trackFixture()
-    local f={commands={},callbacks={},records={},hits={},focus=0,camera={x=1000,y=0},resourceMissing=false}
-    local component,exists=api.engine.getComponent,api.engine.entityExists
-    api.type.ComponentType.BASE_EDGE,api.type.ComponentType.BASE_NODE="edge","node"
-    api.type["enum"]={RoadType={TRACK="track"},BaseEdgeType={NORMAL="normal"},TransportMode={TRAIN="train"}}
+
+-- Public zone contract mock: world-space polygons persist until their matching key is removed.
+-- This checks arguments and lifecycle, NOT native freeplay visibility.
+local routeOverlay=ug_require "oz_railway_network_architect::/route_overlay.lua"
+local function zoneFixture()
+    local f={zones={other_mod_zone={}},adds={},removes={},focus={},commands=0}
+    api.type.Vec4f={new=function(x,y,z,w) return {x=x,y=y,z=z,w=w} end}
     api.type.Vec3f={new=function(x,y,z) return {x=x,y=y,z=z} end}
-    api.type.Box3={new=function(a,b) return {min=a,max=b} end}
-    api.type.SimpleProposal={new=function() return {streetProposal={}} end}
-    api.type.NodeAndEntity={new=function() return {comp={}} end}
-    api.type.SegmentAndEntity={new=function() return {comp={}} end}
-    api.type.Context={new=function() return {} end}
-    f.template={roadType="track",streetStyle="::/infrastructure/track/simple/simple.street",
-        laneConfigs={{width=4,speed=27.777,transportModes={train=true},height=0.53,offset=0,forward=true}}}
-    api.res={streetTemplateRep={find=function(name)
-        equal(name,"::/infrastructure/track/simple/simple.street_template");return f.resourceMissing and -1 or 7
-    end,get=function(id) equal(id,7);return f.template end},streetStyleRep={find=function(name)
-        equal(name,"::/infrastructure/track/simple/simple.street");return 8 end}}
-    api.engine.util.getPlayer=function() return 800 end
-    api.engine.entityExists=function(id) return id==800 or f.records[id]~=nil or exists(id) end
-    api.engine.getComponent=function(id,kind) return f.records[id] and f.records[id][kind] or component(id,kind) end
-    api.engine.system.octreeSystem={findIntersectingEntities=function(box,callback)
-        equal(box.min.x,940);equal(box.max.x,1060)
-        for _,id in ipairs(f.hits) do callback(id,{}) end
+    api.gui.mission={setZone=function(key,polygon,draw,color,prohibit,animation,zOffset)
+        assert(key:match('^oz_railway_network_architect%.route%.'))
+        equal(draw,true);equal(prohibit,false);equal(animation,false);equal(zOffset,1)
+        equal(color.x,0);equal(color.y,1);equal(color.z,1);equal(#polygon,4)
+        f.adds[#f.adds+1]={key=key,polygon=polygon}
+        f.zones[key]=polygon
+        if f.failAdd then error('zone renderer unavailable fixture') end
+    end,removeZone=function(key)
+        assert(key~='other_mod_zone');f.removes[#f.removes+1]=key
+        if f.failRemove then error('zone removal unavailable fixture') end
+        f.zones[key]=nil
     end}
-    api.gui.camera={getCameraData=function() return f.camera end,
-        focusPosition=function(p,d) f.focus=f.focus+1;equal(p.x,1000);equal(d,180) end}
-    api.cmd={makeWorldBuildProposalCmd=function(p,c,ignore,player)
-        equal(ignore,false);equal(player,true);equal(c.player,800)
-        equal(c.checkTerrainAlignment,true);equal(c.cleanupStreetGraph,false)
-        equal(c.gatherBuildings,false);equal(c.gatherFields,false)
-        equal(#p.streetProposal.nodesToAdd,2);equal(#p.streetProposal.edgesToAdd,1)
-        for _,k in ipairs({"nodesToRemove","edgesToRemove","edgeObjectsToRemove","nodeConfigsToRemove"}) do equal(#p.streetProposal[k],0) end
-        equal(#p.constructionsToAdd,0);equal(#p.constructionsToRemove,0);equal(next(p.old2new),nil)
-        return {proposal=p,context=c}
-    end,sendCommand=function(cmd,callback)
-        f.commands[#f.commands+1]=cmd;f.callbacks[#f.callbacks+1]=callback
-        if f.sendThrows then error("synthetic ambiguous send failure") end
-    end}
-    function f.complete(success,mode)
-        local cmd=f.commands[#f.commands];local e=cmd.proposal.streetProposal.edgesToAdd[1].comp
-        local c={};for k,v in pairs(e) do c[k]=v end;c.node0=901;c.node1=902
-        f.records[900]={edge=c};f.records[901]={node={position=c.position0}};f.records[902]={node={position=c.position1}}
-        if mode=="missing" then f.records[900]=nil end
-        if mode=="wrong" then c.roadType="street" end
-        if mode=="position" then c.position0={x=999,y=0,z=-2} end
-        f.callbacks[#f.callbacks]({resultEntities={{900,{}},{901,{}},{902,{}}},
-            resultProposalData={errorState={messages=success and {} or {"native_collision_fixture"}}}},success)
-    end
+    api.gui.camera={focusPosition=function(position,distance) f.focus[#f.focus+1]={position=position,distance=distance} end}
+    api.cmd={sendCommand=function() f.commands=f.commands+1;error('construction forbidden') end,
+        makeWorldBuildProposalCmd=function() f.commands=f.commands+1;error('construction forbidden') end}
     return f
 end
-local function trackToken(gui,action)
-    local s=gui:get()
-    return {world=s.world,epoch=s.epoch,track={action=action,requestId=(s.trackSequence or 0)+1,
-        corridorRequestId=s.requestId,confirmId=s.testTrack and s.testTrack.id,disposableCopy=action=="confirm"}}
+local function routeAction(gui,event,action,id)
+    local s=gui:get();local o=s.routeOverlay
+    return event('plan',{world=s.world,epoch=s.epoch,overlay={action=action,lease=o.lease,
+        sequence=o.sequence+1,requestId=s.requestId,candidateId=id or o.candidateId}})
 end
-local function preparedTrack()
-    local gui,step,untilState,event,callbacks=completedSession();local f=trackFixture()
-    assert(event("plan",trackToken(gui,"prepare")).accepted);equal(gui:get().testTrack.status,"confirm")
-    return gui,step,untilState,event,f,callbacks
+local function routeShown(s) return s.routeOverlay and s.routeOverlay.status=='shown' end
+local function noZones(f) return next(f.zones)=="other_mod_zone" and next(f.zones,"other_mod_zone")==nil end
+local function plannedOverlay()
+    local gui,step,untilState,event,cb=newSession();ready(step,untilState);local f=zoneFixture()
+    event('status',{openRouteView=true});assert(submit(gui,event).accepted)
+    untilState(completed);untilState(routeShown)
+    return gui,step,untilState,event,f,cb
+end
+local function showExisting(gui,event)
+    event('status',{openRouteView=true})
+    return routeAction(gui,event,'show',gui:get().request.preview.candidates[1].id)
 end
 
-test("player UI: compact controls, duplicate town names without raw IDs, and no automatic commands",function()
-    local gui,step,untilState,event=newSession();ready(step,untilState);local f=trackFixture()
+test('overlay: construction disconnected and legacy events rejected without native calls',function()
+    local gui,step,untilState,event=completedSession();local f=zoneFixture()
+    for _,action in ipairs({'prepare','confirm','cancel'}) do
+        local s=gui:get()
+        equal(event('plan',{world=s.world,epoch=s.epoch,track={action=action,requestId=1,disposableCopy=true}}).reason,'construction_disabled')
+    end
+    step(30);equal(f.commands,0);equal(#f.adds,0)
+end)
+
+test('overlay: completed path renders every segment in exact order with no shortcuts or input changes',function()
+    local gui,step,untilState,event=completedSession();local f=zoneFixture()
+    local before=serialize(gui:get().request);local readsBefore=heightReads
+    assert(showExisting(gui,event).accepted);untilState(routeShown)
+    local c=gui:get().request.result.candidates[1]
+    equal(#f.adds,#c.waypoints-1)
+    local bend=false
+    for i,item in ipairs(f.adds) do
+        local poly=item.polygon;local a,b=c.waypoints[i],c.waypoints[i+1]
+        equal((poly[1].x+poly[4].x)/2,a.x);equal((poly[1].y+poly[4].y)/2,a.y)
+        equal((poly[2].x+poly[3].x)/2,b.x);equal((poly[2].y+poly[3].y)/2,b.y)
+        if i>1 then local p=c.waypoints[i-1];if (a.x-p.x)*(b.y-a.y)~=(a.y-p.y)*(b.x-a.x) then bend=true end end
+    end
+    assert(bend,'fixture must exercise real corridor bends')
+    equal(serialize(gui:get().request),before);equal(heightReads,readsBefore);equal(f.commands,0)
+end)
+
+test('overlay: convex connected ribbons preserve offset negative coordinates and shared waypoints',function()
+    local pts={{x=-100.5,y=200.25,z=-4},{x=-36.5,y=200.25,z=-1},{x=-36.5,y=264.25,z=2},{x=27.5,y=328.25,z=3}}
+    local before=serialize(pts)
+    for i=1,#pts-1 do
+        local q=assert(routeOverlay.ribbon(pts[i],pts[i+1]))
+        local area=0
+        for j=1,4 do local b=q[j%4+1];area=area+q[j].x*b.y-b.x*q[j].y end
+        assert(area>0)
+        assert(math.abs((q[1].x+q[4].x)/2-pts[i].x)<1e-10)
+        assert(math.abs((q[2].y+q[3].y)/2-pts[i+1].y)<1e-10)
+    end
+    equal(serialize(pts),before)
+    equal(routeOverlay.ribbon(pts[1],pts[1]),nil)
+    equal(routeOverlay.ribbon({x=0/0,y=0,z=0},pts[1]),nil)
+end)
+
+test('overlay: auto display occurs only after terminal complete success and while a view owns it',function()
+    local gui,step,untilState,event=newSession();ready(step,untilState);local f=zoneFixture()
+    event('status',{openRouteView=true});step(20);equal(#f.adds,0)
+    submit(gui,event);step();equal(#f.adds,0)
+    untilState(completed);untilState(routeShown);assert(#f.adds>1)
+    assert(hasLog('DRAW_SUBMITTED'));equal(f.commands,0)
+end)
+
+test('overlay: hide show and camera movement preserve geometry without new searches',function()
+    local gui,step,untilState,event,f=plannedOverlay()
+    local before=serialize(gui:get().request);local first=serialize(f.zones);local readsBefore=heightReads
+    local n=#f.adds;step(60);equal(#f.adds,n);equal(serialize(f.zones),first)
+    assert(routeAction(gui,event,'focus').accepted);equal(#f.focus,1);equal(#f.adds,n)
+    assert(routeAction(gui,event,'hide').accepted);untilState(function() return noZones(f) end)
+    equal(gui:get().routeOverlay.status,'hidden')
+    assert(routeAction(gui,event,'show').accepted);untilState(routeShown)
+    equal(#f.adds,2*n);equal(serialize(gui:get().request),before);equal(heightReads,readsBefore)
+    for i=1,n do equal(serialize(f.adds[i].polygon),serialize(f.adds[i+n].polygon)) end
+    equal(f.commands,0)
+end)
+
+test('overlay: alternatives use their own actual candidate waypoints',function()
+    local gui,step,untilState,event,f=plannedOverlay();local r=gui:get().request
+    -- The planner may deduplicate flat-map alternatives; create a second validated-shaped
+    -- completed route fixture solely to test candidate dispatch, not planner feasibility.
+    local original=r.result.candidates[1]
+    local second={};for k,v in pairs(original) do second[k]=v end
+    second.id='fixture-second';second.rank=2;second.waypoints={}
+    local a,b=original.waypoints[1],original.waypoints[#original.waypoints]
+    local spacing=original.sampling.fineSpacing
+    local x,y=a.x,a.y
+    second.waypoints[1]={x=x,y=y,z=a.z,water=false}
+    while x~=b.x do x=x+(x<b.x and spacing or -spacing);second.waypoints[#second.waypoints+1]={x=x,y=y,z=a.z,water=false} end
+    while y~=b.y do y=y+(y<b.y and spacing or -spacing);second.waypoints[#second.waypoints+1]={x=x,y=y,z=b.z,water=false} end
+    r.result.candidates[2]=second
+    local compact={};for k,v in pairs(r.preview.candidates[1]) do compact[k]=v end
+    compact.id=second.id;compact.rank=2;compact.waypointCount=#second.waypoints;r.preview.candidates[2]=compact
+    local n=#f.adds
+    assert(routeAction(gui,event,'show',second.id).accepted);untilState(routeShown)
+    equal(gui:get().routeOverlay.candidateId,second.id)
+    equal(#f.adds-n,#second.waypoints-1)
+    local q=f.adds[n+1].polygon
+    equal((q[2].y+q[3].y)/2,second.waypoints[2].y)
+    assert(serialize(second.waypoints)~=serialize(original.waypoints))
+    local state=gui:get();local seq=state.routeOverlay.sequence
+    equal(routeAction(gui,event,'show','absent').accepted,false);equal(state.routeOverlay.sequence,seq+1)
+    untilState(function() return noZones(f) end)
+end)
+
+test('overlay: long route uses bounded batches and full waypoint count',function()
+    local gui,step,untilState,event=newSession({config=flow.config()})
+    -- Existing long-distance integration fixture coordinates, actual hierarchical core.
+    entities[10].x,entities[10].y=-2300,0;entities[20].x,entities[20].y=2300,0
+    mapBounds={minX=-6000,maxX=6000,minY=-4000,maxY=4000}
+    ready(step,untilState);local f=zoneFixture();event('status',{openRouteView=true})
+    assert(submit(gui,event).accepted);untilState(completed)
+    equal(gui:get().request.status,'ok');assert(gui:get().request.hierarchy)
+    local frames=0
+    while not routeShown(gui:get()) do
+        local a,b=#f.adds,#f.removes;step();frames=frames+1
+        assert(#f.adds-a+#f.removes-b<=routeOverlay.batchSize);assert(frames<200)
+    end
+    equal(#f.adds,#gui:get().request.result.candidates[1].waypoints-1)
+    assert(frames>1);equal(f.commands,0)
+end)
+
+test('overlay: unsupported invalid and oversized routes never silently truncate',function()
+    for _,mode in ipairs({'incomplete','invalid','oversize','duplicate'}) do
+        local gui,step,untilState,event=completedSession();local f=zoneFixture();local r=gui:get().request
+        if mode=='incomplete' then r.result.complete=false
+        elseif mode=='invalid' then r.result.candidates[1].waypoints[2].z=0/0
+        elseif mode=='duplicate' then r.result.candidates[1].waypoints[2]=r.result.candidates[1].waypoints[1]
+        else
+            local c=r.result.candidates[1];local last=c.waypoints[#c.waypoints]
+            for i=#c.waypoints+1,1026 do c.waypoints[i]={x=last.x+i*32,y=last.y,z=0,water=false} end
+            r.preview.candidates[1].waypointCount=#c.waypoints
+        end
+        equal(showExisting(gui,event).accepted,false);step(5);equal(#f.adds,0);equal(f.commands,0)
+    end
+end)
+
+test('overlay: unreachable search-limit and unsupported results draw nothing',function()
+    for _,status in ipairs({'unreachable','search_limit','unsupported','incomplete'}) do
+        local gui,step,untilState,event=completedSession();local f=zoneFixture()
+        gui:get().request.status=status;gui:get().status=status
+        equal(showExisting(gui,event).accepted,false);step(5);equal(#f.adds,0)
+    end
+end)
+
+test('overlay: replacement and stale actions cannot restore the previous request',function()
+    local gui,step,untilState,event,f=plannedOverlay();local s=gui:get();local oldKeys={}
+    for k in pairs(f.zones) do if k~='other_mod_zone' then oldKeys[#oldKeys+1]=k end end
+    local stale={world=s.world,epoch=s.epoch,overlay={action='show',lease=s.routeOverlay.lease,
+        sequence=s.routeOverlay.sequence+1,requestId=s.requestId,candidateId=s.routeOverlay.candidateId}}
+    assert(submit(gui,event).accepted);equal(event('plan',stale).accepted,false)
+    untilState(completed);untilState(routeShown)
+    for _,k in ipairs(oldKeys) do equal(f.zones[k],nil) end
+    assert(f.zones.other_mod_zone);equal(f.commands,0)
+end)
+
+test('overlay: reset reload and closed views release only owned zones',function()
+    for _,mode in ipairs({'reload','world','close'}) do
+        local gui,step,untilState,event,f,cb=plannedOverlay();local s=gui:get()
+        local stale={world=s.world,epoch=s.epoch,overlay={action='show',lease=s.routeOverlay.lease,
+            sequence=s.routeOverlay.sequence+1,requestId=s.requestId,candidateId=s.routeOverlay.candidateId}}
+        if mode=='reload' then cb.guiHandleEvent(nil,nil,gui,'test','gameUI','reactPostInit',{})
+        elseif mode=='world' then worldId=100;step(30)
+        else assert(routeAction(gui,event,'close').accepted) end
+        untilState(function() return noZones(f) end)
+        equal(event('plan',stale).accepted,false);equal(gui:get().routeOverlay.lease,nil)
+        equal(f.commands,0)
+    end
+end)
+
+test('overlay: stale window close cannot remove a newly opened view',function()
+    local gui,step,untilState,event,f=plannedOverlay();local s=gui:get()
+    local close={world=s.world,epoch=s.epoch,overlay={action='close',lease=s.routeOverlay.lease}}
+    assert(showExisting(gui,event).accepted);untilState(routeShown)
+    equal(event('plan',close).reason,'stale_route_view');assert(not noZones(f))
+end)
+
+test('overlay: failed drawing cleans partial zones without retries or claimed visibility',function()
+    local gui,step,untilState,event=completedSession();local f=zoneFixture();f.failAdd=true
+    assert(showExisting(gui,event).accepted);step(5)
+    equal(gui:get().routeOverlay.status,'error');equal(#f.adds,1);assert(noZones(f))
+    assert(hasLog('api.gui.mission.setZone'));step(30);equal(#f.adds,1)
+end)
+
+test('overlay: removal failures are bounded visible and explicitly recoverable',function()
+    local gui,step,untilState,event,f=plannedOverlay();f.failRemove=true
+    routeAction(gui,event,'hide');step(40);equal(#f.removes,1)
+    equal(gui:get().routeOverlay.status,'error');assert(hasLog('api.gui.mission.removeZone'))
+    f.failRemove=false;routeAction(gui,event,'hide');untilState(function() return noZones(f) end)
+end)
+
+test('overlay: lost teardown dispatch expires the view and cleans without per-frame polling storms',function()
+    local gui,step,untilState,event,f=plannedOverlay();clock=clock+6
+    step(30);untilState(function() return noZones(f) end)
+    equal(gui:get().routeOverlay.lease,nil);assert(hasLog('VIEW_EXPIRED'))
+end)
+
+test('overlay: rendering budget failure clears a partial route',function()
+    local gui,step,untilState,event=completedSession();local f=zoneFixture()
+    assert(showExisting(gui,event).accepted);clockStep=0.1;step();clockStep=0
+    equal(gui:get().routeOverlay.status,'error');untilState(function() return noZones(f) end)
+    assert(hasLog('rendering_work_budget_exceeded'));equal(f.commands,0)
+end)
+
+test('player overlay UI: small controls no construction and no automatic A-star before Plan',function()
+    local gui,step,untilState,event=newSession();ready(step,untilState);local f=zoneFixture()
     local render,poll,tree,controls=mountUI(true);controls.launcher.params.onClick();tree=render()
-    equal(#find(tree,"ComboBox"),2);equal(#find(tree,"Button"),3) -- launcher plus two actions
-    equal(#find(tree,"Button","Plan Railway"),1);equal(#find(tree,"Button","Build Test Track"),1)
-    equal(find(tree,"Button","Build Test Track")[1].params.meta.enabled,false)
-    local content=panelText(tree)
-    for _,word in ipairs({"#10","#20","snapshot","score","revision","Analyze Network","Inspect Geometry"}) do assert(not content:find(word,1,true)) end
-    local a=find(tree,"ComboBox")[1];local b=find(tree,"ComboBox")[2]
-    a.params.onValueChange("10");b.params.onValueChange("20");tree=render()
-    step(10);equal(#f.commands,0);equal(gui:get().request,nil)
-    find(tree,"Button","Plan Railway")[1].params.onClick();render();untilState(completed);poll();tree=render()
-    assert(panelText(tree):find("Route found",1,true));equal(#f.commands,0)
-    assert(find(tree,"Button","Build Test Track")[1].params.meta.enabled)
-    find(tree,"ComboBox")[1].params.onValueChange("");tree=render()
-    equal(find(tree,"Button","Build Test Track")[1].params.meta.enabled,false)
+    equal(#find(tree,'ComboBox'),2);equal(#find(tree,'Button','Build Test Track'),0)
+    equal(#find(tree,'Button','Plan Railway'),1);equal(gui:get().request,nil);equal(#f.adds,0)
+    local txt=panelText(tree)
+    for _,name in ipairs({'snapshot','score','revision','Analyze Network','Inspect Geometry','#10','#20'}) do assert(not txt:find(name,1,true)) end
+    find(tree,'ComboBox')[1].params.onValueChange('10');find(tree,'ComboBox')[2].params.onValueChange('20');tree=render()
+    equal(gui:get().request,nil)
+    find(tree,'Button','Plan Railway')[1].params.onClick();render();untilState(completed);untilState(routeShown);poll();tree=render()
+    assert(panelText(tree):find('Proposed alignment shown on map',1,true));equal(f.commands,0)
+    find(tree,'Button','Hide Route')[1].params.onClick();render();untilState(function() return noZones(f) end);poll();tree=render()
+    find(tree,'Button','Show Route')[1].params.onClick();render();untilState(routeShown);poll();tree=render()
+    find(tree,'Button','Focus Route')[1].params.onClick();render();equal(#f.focus,1);equal(f.commands,0)
 end)
 
-test("track: prepare and cancel are read-only; confirmation must identify a disposable copy",function()
-    local gui,step,untilState,event,f=preparedTrack()
-    equal(#f.commands,0);equal(f.focus,1)
-    local no=trackToken(gui,"confirm");no.track.disposableCopy=false
-    equal(event("plan",no).reason,"explicit_disposable_confirmation_required");equal(#f.commands,0)
-    assert(event("plan",trackToken(gui,"cancel")).accepted);equal(gui:get().testTrack.status,"cancelled")
-    step(20);equal(#f.commands,0)
-    assert(event("plan",trackToken(gui,"prepare")).accepted);equal(gui:get().testTrack.status,"confirm")
-end)
-
-test("track: one native straight proposal per confirmation and verified new edge and nodes",function()
-    local gui,step,untilState,event,f=preparedTrack();local click=trackToken(gui,"confirm")
-    local before=serialize(gui:get().request)
-    assert(event("plan",click).accepted);equal(gui:get().testTrack.status,"building");equal(#f.commands,1)
-    equal(event("plan",click).accepted,false);equal(event("plan",trackToken(gui,"confirm")).accepted,false)
-    local p=f.commands[1].proposal;local e=p.streetProposal.edgesToAdd[1]
-    equal(e.entity,-1);equal(e.type,1);equal(e.comp.node0,-3);equal(e.comp.node1,-4)
-    equal(e.comp.tangent0.x,80);equal(e.comp.tangent1.x,80);equal(e.comp.type,"normal")
-    equal(p.streetProposal.nodesToAdd[1].comp.position.x,960)
-    equal(p.streetProposal.nodesToAdd[2].comp.position.x,1040)
-    equal(submit(gui,event).reason,"busy");equal(analyze(gui,event).reason,"busy")
-    f.complete(true);equal(gui:get().testTrack.status,"built");equal(gui:get().testTrack.entity,900)
-    equal(serialize(gui:get().request),before);equal(f.focus,2)
-    equal(event("plan",trackToken(gui,"prepare")).reason,"one_attempt_per_loaded_session")
-    step(20);equal(#f.commands,1);equal(logCount("[RNA:BUILD:MVP] VERIFIED"),1)
-end)
-
-test("track: native failures report actual messages and never silently retry",function()
-    local gui,step,untilState,event,f=preparedTrack()
-    assert(event("plan",trackToken(gui,"confirm")).accepted);f.complete(false)
-    equal(gui:get().testTrack.status,"failed");assert(hasLog("native_collision_fixture"))
-    step(50);equal(#f.commands,1);equal(gui:get().testTrack.entity,nil)
-    equal(event("plan",trackToken(gui,"prepare")).accepted,false)
-end)
-
-test("track: successful callback alone never proves track existence or geometry",function()
-    for _,mode in ipairs({"missing","wrong","position"}) do
-        local gui,step,untilState,event,f=preparedTrack();event("plan",trackToken(gui,"confirm"));f.complete(true,mode)
-        equal(gui:get().testTrack.status,"unverified");equal(gui:get().testTrack.entity,nil);equal(f.focus,1)
-        assert(hasLog("VERIFY_FAILED"));equal(#f.commands,1)
-    end
-end)
-
-test("track: stale confirmation, world reset and late callbacks cannot construct or restore old state",function()
-    for _,when in ipairs({"before","after"}) do
-        local gui,step,untilState,event,f,cb=preparedTrack();local token=trackToken(gui,"confirm")
-        if when=="after" then event("plan",token) end
-        cb.guiHandleEvent(nil,nil,gui,"test","gameUI","reactPostInit",{})
-        equal(event("plan",token).accepted,false)
-        if when=="after" then f.complete(true);assert(hasLog("STALE_CALLBACK_DISCARDED")) end
-        equal(gui:get().testTrack,nil);equal(#f.commands,when=="after" and 1 or 0)
-    end
-end)
-
-test("track: confirmation expires without commands and resource or occupied sites fail safely",function()
-    local gui,step,untilState,event,f=preparedTrack();clock=clock+31;step()
-    equal(gui:get().testTrack.status,"expired");equal(event("plan",trackToken(gui,"confirm")).accepted,false);equal(#f.commands,0)
-    for _,mode in ipairs({"resource","style","lane","occupied","water","steep","missing","camera"}) do
-        gui,step,untilState,event=completedSession();f=trackFixture()
-        if mode=="resource" then f.resourceMissing=true
-        elseif mode=="style" then f.template.streetStyle="wrong"
-        elseif mode=="lane" then f.template.laneConfigs[1].width=0
-        elseif mode=="occupied" then f.hits={900};f.records[900]={edge={}}
-        elseif mode=="water" then api.engine.terrain.isOnWater=function() return true end
-        elseif mode=="steep" then api.engine.terrain.getHeightAt=function(p) return p.x end
-        elseif mode=="camera" then f.camera.x=0/0
-        else api.engine.terrain.getHeightAt=function() return nil end end
-        event("plan",trackToken(gui,"prepare"));equal(gui:get().testTrack.status,"failed");equal(#f.commands,0)
-    end
-end)
-
-test("track: confirmation rechecks terrain, occupancy, resource and observed work budget",function()
-    for _,mode in ipairs({"terrain","occupied","resource","slow"}) do
-        local gui,step,untilState,event,f=preparedTrack()
-        if mode=="terrain" then api.engine.terrain.getHeightAt=function() return -1.9 end
-        elseif mode=="occupied" then f.hits={900};f.records[900]={edge={}}
-        elseif mode=="resource" then f.resourceMissing=true else clockStep=0.1 end
-        event("plan",trackToken(gui,"confirm"));equal(gui:get().testTrack.status,"failed")
-        equal(#f.commands,0);equal(gui:get().trackAttempted,true)
-    end
-end)
-
-test("track: ambiguous dispatch exceptions lock out further attempts",function()
-    local gui,step,untilState,event,f=preparedTrack();f.sendThrows=true
-    event("plan",trackToken(gui,"confirm"));equal(gui:get().testTrack.status,"unverified")
-    f.complete(true);equal(gui:get().testTrack.status,"unverified")
-    equal(event("plan",trackToken(gui,"prepare")).accepted,false);equal(#f.commands,1)
-end)
-
-test("track: world change during command preparation prevents dispatch",function()
-    local gui,step,untilState,event,f=preparedTrack()
-    local make=api.cmd.makeWorldBuildProposalCmd
-    api.cmd.makeWorldBuildProposalCmd=function(...)
-        local command=make(...);worldId=100;return command
-    end
-    event("plan",trackToken(gui,"confirm"))
-    equal(#f.commands,0);assert(hasLog("world_changed_before_send"))
-end)
-
-test("player UI: explicit confirmation, cancelled queued close and simple success text",function()
-    local gui,step,untilState,event=newSession();ready(step,untilState);local f=trackFixture()
+test('player overlay UI: teardown joins cleanup and reopening requires an explicit Show',function()
+    local gui,step,untilState,event=newSession();ready(step,untilState);local f=zoneFixture()
     local render,poll,tree,controls=mountUI(true);controls.launcher.params.onClick();tree=render()
-    find(tree,"ComboBox")[1].params.onValueChange("10");find(tree,"ComboBox")[2].params.onValueChange("20");tree=render()
-    find(tree,"Button","Plan Railway")[1].params.onClick();render();untilState(completed);poll();tree=render()
-    find(tree,"Button","Build Test Track")[1].params.onClick();tree=render()
-    equal(#f.commands,0);assert(panelText(tree):find("This changes the map",1,true))
-    local label="This is my disposable copy — build one track"
-    local confirm=find(tree,"Button",label)[1].params.onClick
-    controls.autoJoin=false;confirm();controls.panel.params.onClose();controls.flush();equal(#f.commands,0)
+    find(tree,'ComboBox')[1].params.onValueChange('10');find(tree,'ComboBox')[2].params.onValueChange('20');tree=render()
+    find(tree,'Button','Plan Railway')[1].params.onClick();render();untilState(completed);untilState(routeShown);poll();tree=render()
+    controls.autoJoin=false;controls.panel.params.onClose();controls.flush();step(20);assert(noZones(f))
     controls.autoJoin=true;controls.launcher.params.onClick();tree=render()
-    confirm=find(tree,"Button",label)[1].params.onClick;confirm();confirm();tree=render();equal(#f.commands,1)
-    f.complete(true);poll();tree=render();assert(panelText(tree):find("Track built successfully",1,true))
-    equal(find(tree,"Button","Build Test Track")[1].params.meta.enabled,false)
+    assert(noZones(f));assert(not panelText(tree):find('shown on map',1,true))
+    find(tree,'Button','Show Route')[1].params.onClick();render();untilState(routeShown)
+    equal(f.commands,0)
 end)
 
-test("player UI: no stale success on reopen and malformed build status stops polling",function()
-    local gui,step,untilState,event,f=preparedTrack();event("plan",trackToken(gui,"confirm"));f.complete(true)
+
+test('player overlay UI: alternatives select once without rerunning the planner',function()
+    local gui,step,untilState,event,f=plannedOverlay();local r=gui:get().request
+    -- Renderer-control fixture; original route arrays stay in the owner, not React.
+    local c={};for k,v in pairs(r.result.candidates[1]) do c[k]=v end;c.id='alternate';c.rank=2
+    local p={};for k,v in pairs(r.preview.candidates[1]) do p[k]=v end;p.id='alternate';p.rank=2
+    r.result.candidates[2]=c;r.preview.candidates[2]=p
+    local before=serialize(r);local readsBefore=heightReads
     local render,poll,tree,controls=mountUI(true);controls.launcher.params.onClick();tree=render()
-    assert(panelText(tree):find("Track built successfully",1,true))
-    controls.panel.params.onClose();render();controls.autoJoin=false
-    controls.launcher.params.onClick();tree=render();assert(not panelText(tree):find("Track built successfully",1,true))
-    worldId=100;controls.flush();tree=render();assert(not panelText(tree):find("Track built successfully",1,true))
-    controls.autoJoin=true;controls.resultFilter=function(v) v.testTrack.status="fabricated";return v end
-    poll();tree=render();assert(panelText(tree):find("Connection lost",1,true))
-    local n=#controls.events;poll();equal(#controls.events,n)
+    local combos=find(tree,'ComboBox');equal(#combos,3)
+    local select=combos[3].params.onValueChange
+    select('alternate');select('alternate');tree=render();untilState(routeShown);poll();tree=render()
+    equal(gui:get().routeOverlay.candidateId,'alternate');equal(gui:get().routeOverlay.sequence,1)
+    equal(serialize(gui:get().request),before);equal(heightReads,readsBefore);equal(f.commands,0)
 end)
 
-print("PASS " .. passed .. " live planning/UI tests (mocked engine and React, not TF3 runtime verification)")
+test('player overlay UI: world changes reclaim a view lease without restoring stale geometry',function()
+    local gui,step,untilState,event=newSession();ready(step,untilState);local f=zoneFixture()
+    local render,poll,tree,controls=mountUI(true);controls.launcher.params.onClick();tree=render()
+    local oldLease=gui:get().routeOverlay.lease
+    worldId=100;poll();tree=render();tick=tick+1;step(30)
+    poll();tree=render();poll();tree=render()
+    assert(gui:get().routeOverlay.lease>oldLease);equal(#f.adds,0)
+    find(tree,'ComboBox')[1].params.onValueChange('10');find(tree,'ComboBox')[2].params.onValueChange('20');tree=render()
+    find(tree,'Button','Plan Railway')[1].params.onClick();render();untilState(completed);untilState(routeShown)
+    equal(f.commands,0)
+end)
+
+test('player overlay UI: malformed renderer responses stop polling instead of fabricating visibility',function()
+    local gui,step,untilState,event=newSession();ready(step,untilState);local f=zoneFixture()
+    local render,poll,tree,controls=mountUI(true);controls.launcher.params.onClick();tree=render()
+    controls.resultFilter=function(v) v.routeOverlay.status='fake_visibility';return v end
+    poll();tree=render();assert(panelText(tree):find('Connection lost',1,true))
+    local count=#controls.events;poll();equal(#controls.events,count);equal(#f.adds,0);equal(f.commands,0)
+end)
+
+print('PASS '..passed..' live planning/UI tests (mocked engine and React, not TF3 runtime verification)')

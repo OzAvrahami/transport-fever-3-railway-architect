@@ -42,44 +42,48 @@ function ui.children(v)
             v.send("plan",{world=latest.world,epoch=latest.epoch,requestId=latest.requestId+1,
                 sourceId=tonumber(pair.source),destinationId=tonumber(pair.destination)})
         end}
-    local t=v.confirmed:old() and state.testTrack or {}
-    local selectedRoute=v.confirmed:old() and state.preview and tostring(state.preview.source.id)==choice.source
-        and tostring(state.preview.destination.id)==choice.destination
+    local fresh=v.confirmed:old() and not v.transportFailed:get()
+    local p=fresh and state.preview
+    local o=fresh and state.routeOverlay or {}
     local status="Ready"
     if v.transportFailed:get() then status="Connection lost. Close and reopen this window."
-    elseif t.status=="built" then status="Track built successfully"
-    elseif t.status=="building" then status="Placing test track... Unpause to finish."
-    elseif t.status=="failed" then status="Cannot place track here"
-    elseif t.status=="unverified" then status="Track placement could not be confirmed. Check the map before continuing."
-    elseif t.status=="expired" then status="Confirmation expired. Choose the test site again."
-    elseif t.status=="confirm" then status="Test site ready"
     elseif state.busy then status="Planning railway..."
-    elseif selectedRoute then status="Route found"
-    elseif state.status=="ok" then status="Ready"
+    elseif o.status=="rendering" then status="Showing route..."
+    elseif o.status=="shown" then status="Proposed alignment shown on map"
+    elseif o.status=="error" then status="Cannot show route. See the game log."
+    elseif o.status=="unsupported" then status="Cannot display this route."
+    elseif p then status="Route found"
     elseif state.status=="waiting" or state.status=="loading" then status="Loading towns... Unpause briefly."
-    elseif state.status~="idle" then status="No route found. Try another pair of towns." end
+    elseif state.status~="idle" and state.status~="ok" then status="No route found. Try another pair of towns." end
     if v.errorState:old()~="" and not v.transportFailed:get() then status="Action unavailable. Please try again when ready." end
     children[#children+1]=text(status)
-    local function action(kind)
-        if not available() or not v.confirmed:old() then return end
-        local latest=v.current:get();local test=latest and latest.testTrack
-        if not latest or not test or latest.world~=state.world or latest.epoch~=state.epoch
-            or latest.requestId~=state.requestId or test.sequence~=t.sequence then return end
-        if kind=="prepare" and (latest.busy or not test.eligible or test.attempted or not selectedRoute) then return end
-        if kind~="prepare" and (test.status~="confirm" or test.confirmId~=t.confirmId) then return end
+    local function action(kind,id)
+        if not available() or not fresh then return end
+        local latest=v.current:get();local active=latest and latest.routeOverlay
+        if not latest or not active or not active.lease or latest.world~=state.world or latest.epoch~=state.epoch
+            or latest.requestId~=state.requestId or active.sequence~=o.sequence then return end
         v.errorState:set("")
-        v.send("plan",{world=latest.world,epoch=latest.epoch,track={action=kind,requestId=test.sequence+1,
-            corridorRequestId=latest.requestId,confirmId=test.confirmId,disposableCopy=kind=="confirm"}})
+        v.send("plan",{world=latest.world,epoch=latest.epoch,overlay={action=kind,lease=active.lease,
+            sequence=active.sequence+1,requestId=latest.requestId,candidateId=id}})
     end
-    children[#children+1]=builtin.Button{content=text("Build Test Track"),
-        meta={enabled=t.eligible==true and selectedRoute==true and not t.attempted and not state.busy and not v.transportFailed:get()},
-        onClick=function() action("prepare") end}
-    if t.status=="confirm" and v.confirmed:old() then
-        children[#children+1]=text("This changes the map: one 80-metre track at the site now in view. It may adjust ground and charge your company. Only proceed on a disposable save copy you made. This does not build the planned route.")
-        children[#children+1]=builtin.Button{content=text("This is my disposable copy — build one track"),onClick=function() action("confirm") end}
-        children[#children+1]=builtin.Button{content=text("Cancel"),onClick=function() action("cancel") end}
-    elseif t.eligible and selectedRoute and not t.attempted then
-        children[#children+1]=text("For the test, pan to a clear, flat patch of land. Build Test Track checks the centre of your view before asking for confirmation.")
+    if p and o.lease then
+        children[#children+1]=text(p.source.name.." — "..p.destination.name)
+        local selectedId=o.candidateId
+        local found=false
+        for _,c in ipairs(p.candidates) do if c.id==selectedId then found=true end end
+        if not found then selectedId=p.candidates[1].id end
+        if #p.candidates>1 then
+            local items={}
+            for i,c in ipairs(p.candidates) do items[i]=builtin.ComboBoxItem{value=c.id,content=text("Route "..i)} end
+            children[#children+1]=builtin.ComboBox{value=selectedId,items=items,meta={class="rna-planner-town"},
+                onValueChange=function(id) action("show",id) end}
+        end
+        children[#children+1]=builtin.Button{content=text("Hide Route"),meta={enabled=o.status=="shown" or o.status=="rendering"},
+            onClick=function() action("hide",selectedId) end}
+        children[#children+1]=builtin.Button{content=text("Show Route"),meta={enabled=o.status~="shown" and o.status~="rendering"},
+            onClick=function() action("show",selectedId) end}
+        children[#children+1]=builtin.Button{content=text("Focus Route"),onClick=function() action("focus",selectedId) end}
+        children[#children+1]=text("Proposed alignment only. No railway has been built.")
     end
     return children
 end

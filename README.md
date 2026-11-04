@@ -1,5 +1,30 @@
 # Railway Network Architect
 
+**Current: Visible Route Preview ? native freeplay visibility awaiting the owner's test.**
+
+Choose **Midhurst** and **Goole**, then **Plan Railway**. A completed corridor is
+submitted as a continuous bright cyan terrain ribbon, following every original
+waypoint segment. **Hide Route**, **Show Route** and **Focus Route** reuse that result;
+a small route selector appears when alternatives exist. No railway is constructed.
+
+Build Test Track and confirmation controls are removed. The construction adapter is
+archived outside the deployable package; old build events are rejected. Metadata is
+read-only again (`cosmetic=true`). All planners, inventories, geometry, network,
+worklist and batch algorithms remain unchanged.
+
+The documented zone API is used with `draw=true` and `prohibitBuilding=false` from
+the existing GUI owner. Rendering is capped at 1,024 segments, 16 native operations
+per callback. No route truncation, simplification or straight-line substitution.
+Closing RNA hides the overlay; reopening requires Show Route. Keep the window open
+or drag it aside while inspecting the route with the camera.
+
+**362 automated tests pass; 56 Lua files pass syntax checks.** This is not proof that
+TF3 renders the zones in freeplay. See the [source evidence, changed files and one
+focused native acceptance procedure](docs/visible_route_preview.md). No staging,
+commits, pushes or save changes were performed. Stop for review and native verification.
+
+## Previous direction (superseded)
+
 **Current: Visual Railway MVP — implementation ready for owner review; native placement unverified.**
 
 The player window now shows Source town, Destination town, **Plan Railway**, a simple

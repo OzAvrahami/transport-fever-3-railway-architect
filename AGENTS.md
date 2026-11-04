@@ -2,13 +2,13 @@
 
 ## Current milestone
 
-Phase 6B only: native contract audit and isolated intermediate track geometry DTO.
+Phase 6C only: offline symbolic proposal assembly and native preview contract research.
 No native proposal creation/evaluation or construction command execution. Preserve the original
 topology result and individual handoff, accepted local work, window styling, subscriptions, inventories
 and corridor algorithms. No automatic network analysis or all-pairs terrain A*.
 World-space rendering remains unresolved; the panel is NOT a map overlay.
 No staging deployment, construction, speculative APIs, commits, tags or pushes.
-Stop after Phase 6B for code review. Newer live features still await native acceptance.
+Stop after Phase 6C for code review. Newer live features still await native acceptance.
 The authoritative planner remains content/planning/ inside the mod.
 
 Topology studies consider supplied demand evidence, distance, geography and transport
@@ -17,6 +17,20 @@ and actual construction remain unverified; scores are explicit planning preferen
 
 ## Development conventions
 
+- Offline assembly lives in content/geometry/track_proposal_assembly.lua. Its descriptor
+  is not a native SimpleProposal. Revalidate through Phase 6B; reject noncanonical node
+  references instead of welding, fitting or attaching geometry. Preserve source evidence.
+- Use one negative temporary-ID namespace: nodes first, then segments. Only explicitly
+  isolated new endpoints and NORMAL/TRACK configuration are supported. Never infer
+  station positions or existing node IDs from town anchors.
+- Require caller-supplied template/style, lane configuration, typeIndex and provenance.
+  Enum names are symbolic descriptor data; do not guess native enum values, resolve
+  resources implicitly or select defaults. Ownership remains explicitly unresolved.
+- Bound assembly to 255 segments, 256 nodes and 8 lanes per segment. Preserve diagnostic
+  violations. Native readiness remains blocked even when all offline checks pass.
+- ProposalViewer is gated: accepted input declarations do not establish safe RNA tool
+  ownership, non-mutation or cancellation/reload cleanup. Do not activate it or process
+  proposals in this milestone. Keep all live UI and subscriptions unchanged.
 - Phase 6B adapter lives in content/geometry/track_geometry_dto.lua. It is NOT a
   SimpleProposal or processed Proposal, and no live code imports it. Preserve all
   endpoint/tangent values and source indices; DTO node indices are not entity IDs.
@@ -44,7 +58,7 @@ and actual construction remain unverified; scores are explicit planning preferen
   bridges/tunnels, stations and connections require future independent assessment.
 - Do not equate construction edgeLists, SimpleProposal and processed Proposal.
   makeProposalData accepts Proposal, not a documented SimpleProposal overload.
-  Phase 6B must not execute it, create WorldBuildProposal commands or send commands.
+  Phase 6C must not execute it, create WorldBuildProposal commands or send commands.
 - Batch coordination lives in network_batch.lua, in the existing GUI owner only.
   Reuse the plan event with a separate batch envelope/token; no extra subscription.
   Start only on Study Marked Corridors. Marking/editing never triggers a search.

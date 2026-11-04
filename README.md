@@ -1,19 +1,20 @@
 # Railway Network Architect
 
-**Phase 6B: track geometry compatibility foundation (offline only, awaiting review).**
+**Phase 6C: offline railway proposal assembly (awaiting review).**
 
-The new pure-Lua `content/geometry/track_geometry_dto.lua` copies Phase 6A curves into
-an explicitly intermediate DTO. It validates endpoint/tangent continuity, recomputes
-sampled diagnostics, reports curvature/gradient-rate jumps and preserves provenance.
-Installed TF3 sources support endpoint/tangent field correspondence, but do not yet
-establish complete native interpolation or proposal-processing compatibility. This is
-not a native Proposal. Templates, terrain, collisions and engine acceptance remain
-unverified. No live script loads the adapter; optional limits remain caller assumptions.
+The new pure-Lua `content/geometry/track_proposal_assembly.lua` revalidates Phase 6B
+geometry and produces a symbolic assembly descriptor with deterministic negative IDs,
+shared nodes, unchanged endpoint/tangent values and explicit resource configuration.
+It creates no native objects. Resource resolution, native constructor defaults, ownership,
+terrain/collisions and engine acceptance remain unresolved. ProposalViewer accepts
+SimpleProposal in its declarations, but safe RNA activation and cleanup are still gated.
+No live script loads the assembler; no UI or planning behavior changes.
 
-**290 automated tests pass**, including 20 geometry and 23 DTO regressions; 51 Lua
+**312 automated tests pass**, including 22 new assembly regressions; 53 Lua
 files pass syntax checks. Existing planners, inventories, events, UI and limits are
-unchanged, as is the Phase 6A fitter. See the [Phase 6B contract audit, DTO contract,
-validation results and Phase 6C gate](docs/phase_6b_track_proposal_contract.md) and the
+unchanged, as are the Phase 6A fitter and Phase 6B adapter. See the [Phase 6C assembly
+contract, source evidence and preview safety gate](docs/phase_6c_native_proposal_assembly.md),
+[Phase 6B DTO contract](docs/phase_6b_track_proposal_contract.md) and the
 [Phase 6A mathematical foundation](docs/phase_6a_rail_geometry.md).
 No construction commands, proposal-validation calls, staging deployment, commits, tags or pushes.
 

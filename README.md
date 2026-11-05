@@ -1,19 +1,13 @@
 # Railway Network Architect
 
-**Current: Grouped-model classification acceptance correction, ready for review.**
+**Current: Station-aware smooth railway preview, ready for owner review.**
 
-The latest native test retained one Midhurst station site and no Morley site. Many
-required-region conflicts were unknown because grouped model lists above eight
-instances were not inspected. Classification now checks complete groups incrementally,
-with request budgets, resource caching and revision checks. Only entirely verified
-tree groups become provisional vegetation clearance; mixed or unknown groups block.
-Initial/final screening and route masks retain the shared occupancy policy and native
-aggregate bounds. No tracks, stations, terrain or vegetation changes are made.
-See the [source evidence, limits and focused native retest](docs/grouped_model_classification_acceptance_fix.md).
-Midhurst-Morley success still requires the owner's real-game test.
-
-The owner has verified the cyan route overlay in native TF3 Freeplay. The new station
-workflow is implemented and automated-tested; its native Midhurst?Morley test is pending.
+The owner has verified orange/purple station reservations and the cyan approach-to-approach
+route in native Midhurst-Morley Freeplay. This change keeps those locations and the A*
+route, then attempts bounded Hermite smoothing with fixed station approach tangents.
+Only fully checked preview alternatives are rendered; any failure keeps the original
+grid route and logs the reason. No railway, station, tree or terrain is changed.
+See [the smooth-preview report and one native retest](docs/station_aware_smooth_preview.md).
 
 Choose Source town and Destination town, then **Plan Railway**. RNA now searches near
 actual occupied town buildings for approximate passenger through-station reservations,
@@ -25,12 +19,15 @@ On success, **orange** marks the source station reservation and **purple** the d
 **cyan** follows the computed corridor between their approach points. Alternative selection,
 Hide/Show/Focus Route and close/reload cleanup reuse the existing renderer. No station or
 railway is built. Road proximity is not verified walking access, and the reservation is
-not a construction-ready native footprint. The route remains unsmoothed.
+not a construction-ready native footprint. Smoothing checks known obstacle bounds and
+curve gradients/radius; terrain and water remain sampled, not continuously certified.
+The existing Hide/Show/Focus, alternatives and cleanup paths are preserved.
 
-**432 tests pass; 63 Lua files pass syntax checks.** All baseline regressions remain.
+**464 tests pass; 65 Lua files pass syntax checks.** All baseline regressions remain.
 See [station data evidence, selection assumptions, changed files, limits and the focused
 native acceptance procedure](docs/station_aware_planning.md). The authoritative A*,
-hierarchy, inventories, network/worklist/batch and geometry algorithms are preserved.
+hierarchy, inventories and network/worklist/batch algorithms are preserved. The Hermite
+fitter adds opt-in preview controls while its existing default behavior is preserved.
 
 All construction capability stays disconnected and archived outside the deployable mod.
 Read-only metadata, identity and revision are unchanged. No staging deployment, save

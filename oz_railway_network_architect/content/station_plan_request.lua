@@ -4,6 +4,7 @@ local sites=ug_require "oz_railway_network_architect::/planning/station_sites.lu
 local occupancy=ug_require "oz_railway_network_architect::/planning/station_occupancy.lua"
 local corridor=ug_require "oz_railway_network_architect::/live_plan_request.lua"
 local flow=ug_require "oz_railway_network_architect::/live_plan_data.lua"
+local smooth=ug_require "oz_railway_network_architect::/geometry/station_smooth_preview.lua"
 local R={}
 local function log(s) debugPrint("[RNA:STATION] "..s) end
 local function audit(t,c)
@@ -44,7 +45,7 @@ local function stop(s,status,reason)
         log("MODEL_BUDGET visits="..c.visits.." lookups="..c.lookups.." cache_hits="..c.cacheHits.." lookup_errors="..c.lookupErrors
             .." max_group=4096 max_visits=65536 max_lookups=1024 per_callback=64 spatial_precision=aggregate_AABB_unresolved")
     end
-    s.revalidation,s.objectJob,s.modelContext=nil,nil,nil
+    s.revalidation,s.objectJob,s.modelContext,s.smoothing=nil,nil,nil,nil
     s.finished,s.status,s.reason=true,status,reason
     s.routes,s.pairs=nil,nil
     if status~="ok" then s.result=nil end
@@ -176,7 +177,7 @@ local function work(s)
         end
     elseif s.phase=="pair" then
         local pair=s.pairs[s.pairIndex]
-        if not pair or s.pairIndex>2 then s.phase="verify";s.verifyIndex=1;return end
+        if not pair or s.pairIndex>2 then s.phase="smooth";s.smoothIndex=1;return end
         validateSources(s)
         local a,b=pair.source,pair.destination
         log("PAIR index="..s.pairIndex.." source="..a.id.." destination="..b.id.." screen_score="..flow.number(pair.score)
@@ -221,6 +222,36 @@ local function work(s)
                 .." coverage=collected_local_neighborhoods construction=unverified")
             finishPair(s) -- One real corridor per evaluated station pair, never fabricated alternatives.
         end
+    elseif s.phase=="smooth" then
+        local c=s.routes[s.smoothIndex]
+        if not c then s.phase="verify";s.verifyIndex=1;return end
+        s.smoothStarted=s.smoothStarted or read.seconds()
+        if not s.smoothing then
+            s.smoothing=smooth.start(c);s.progress="Refining railway preview..."
+            log("SMOOTH_START candidate="..c.id.." min_radius=40 max_grade=0.08 terrain_delta=2 assumptions=provisional")
+        end
+        local j=s.smoothing;local reads=0;local units=0
+        local ok,err=pcall(function()
+            if read.seconds()-s.smoothStarted>10 or s.smoothWorkExceeded then smooth.reject(j,"smoothing_work_budget_grid_retained") end
+            while not j.finished and units<8 and reads<16 do
+                local probe=smooth.probe(j)
+                if probe then
+                    smooth.accept(j,read.sampleCurve(s.bounds,probe.x,probe.y));reads=reads+1
+                else
+                    local phase=j.phase;smooth.step(j,c,s.objects,s.bounds);units=units+1
+                    if phase=="fit" or phase=="copy" then break end
+                end
+            end
+        end)
+        if not ok then smooth.reject(j,"smoothing_error:"..flow.text(err)) end
+        if j.finished then
+            c.smoothPreview=smooth.result(j)
+            log("SMOOTH_COMPLETE candidate="..c.id.." status="..j.status.." reason="..flow.text(j.reason)
+                .." segments="..j.segments.." probes="..j.probeCount.." max_curvature_bound="..flow.number(j.maxCurvature)
+                .." max_grade_bound="..flow.number(j.maxGradient).." terrain_delta="..flow.number(j.maxTerrainDelta)
+                .." obstacle_coverage=known_local_AABBs terrain_validation=sampled construction=unverified")
+            s.smoothing=nil;s.smoothIndex=s.smoothIndex+1
+        end
     elseif s.phase=="verify" then
         if #s.routes==0 then error("station_planning_unresolved_no_compatible_corridor",0) end
         if not s.finalModelCacheReset then
@@ -255,7 +286,7 @@ local function work(s)
         s.result={status="ok",complete=true,candidates=s.routes,profiles={},stats={},snapshot=s.lastSnapshot,
             stationSnapshot={world=s.world,startTick=s.startTick,endTick=s.tick,started=s.started,atomic=false}}
         s.routes=nil;s.pairs=nil
-        stop(s,"ok","station_pairs_evaluated;reservations_approximate;walking_access_unknown;smoothing_unverified")
+        stop(s,"ok","station_pairs_evaluated;reservations_approximate;walking_access_unknown;smooth_preview_optional;construction_unverified")
     end
 end
 function R.step(s)
@@ -272,7 +303,17 @@ function R.step(s)
             s.maxWorkSeconds=math.max(s.maxWorkSeconds or 0,ended-now)
             s.zeroClockDelta=s.zeroClockDelta or ended==now;s.elapsedSeconds=ended-s.started
         end
-        if not flow.finite(ended) or ended<now or ended-now>0.05 then error("station_callback_budget_exceeded",0) end
+        if flow.finite(ended) and ended>=now and ended-now>0.05 and s.phase=="smooth" then
+            -- Stop optional smoothing on observed overrun; preserve already accepted
+            -- grid corridors, then perform the normal final reservation checks.
+            s.smoothWorkExceeded=true
+            if s.smoothing then smooth.reject(s.smoothing,"smoothing_work_budget_grid_retained") end
+            local c=s.routes[s.smoothIndex-1]
+            if not s.smoothing and c and c.smoothPreview then
+                c.smoothPreview={status="fallback",reason="smoothing_work_budget_grid_retained",constructionStatus="unverified"}
+                log("SMOOTH_FALLBACK candidate="..c.id.." reason=observed_50ms_work_guard")
+            end
+        elseif not flow.finite(ended) or ended<now or ended-now>0.05 then error("station_callback_budget_exceeded",0) end
     end)
     if not ok then
         local message=flow.text(type(reason)=="table" and reason.reason or reason)

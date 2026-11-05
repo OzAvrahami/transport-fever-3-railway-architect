@@ -42,6 +42,11 @@ function overlay.heartbeat(state,lease)
     local o=context(state)
     if o.lease and lease==o.lease then o.lastSeen=read.seconds() end
 end
+local function drawPoints(c)
+    local s=c.smoothPreview
+    if s and s.status=="validated" then return s.points end
+    return c.waypoints
+end
 local function candidate(state,id)
     local r=state.request
     if not r or not r.finished or r.status~="ok" or not preview.valid(r.preview,state)
@@ -56,18 +61,22 @@ local function candidate(state,id)
         or c.feasibility~="sampled_constraints_satisfied" or type(c.waypoints)~="table"
         or c.sourceId~=r.sourceId or c.destinationId~=r.destinationId then return nil,"invalid_candidate" end
     local n=#c.waypoints
-    if n<2 or n>overlay.maxSegments+1 then return nil,"route_render_limit_no_truncation" end
+    local points=drawPoints(c)
+    if type(points)~="table" or #points<2 or #points>overlay.maxSegments+1 then return nil,"route_render_limit_no_truncation" end
     -- Reuse the accepted pure continuity/endpoint validator, never the pathfinder.
     local checked,why=preview.build(state)
     if not checked then return nil,why end
     if n~=r.preview.candidates[index].waypointCount then return nil,"waypoint_count_changed" end
-    for i=1,n do
-        if not finitePoint(c.waypoints[i]) then return nil,"invalid_waypoint" end
-        if i>1 and not overlay.ribbon(c.waypoints[i-1],c.waypoints[i]) then return nil,"degenerate_segment" end
+    for i=1,#points do
+        if not finitePoint(points[i]) then return nil,"invalid_waypoint" end
+        if i>1 and not overlay.ribbon(points[i-1],points[i]) then return nil,"degenerate_segment" end
     end
     local compact=r.preview.candidates[index]
     for _,pair in ipairs({{c.waypoints[1],compact.start},{c.waypoints[n],compact.destination}}) do
         for _,axis in ipairs({"x","y","z"}) do if pair[1][axis]~=pair[2][axis] then return nil,"endpoint_changed" end end
+    end
+    for _,pair in ipairs({{points[1],c.waypoints[1]},{points[#points],c.waypoints[n]}}) do
+        for _,axis in ipairs({"x","y","z"}) do if pair[1][axis]~=pair[2][axis] then return nil,"smooth_endpoint_changed" end end
     end
     return c,index
 end
@@ -77,8 +86,9 @@ function overlay.start(state,id)
     if not c then o.status="unsupported";log("UNAVAILABLE reason="..flow.text(index));return false,index end
     o.serial=o.serial+1;o.candidateId=id
     o.job={world=state.world,epoch=state.epoch,requestId=state.requestId,index=index,id=id,
-        cursor=1,count=#c.waypoints-1,markers=c.stationSites and 6 or 0,serial=o.serial}
-    log("START request="..state.requestId.." candidate="..id.." segments="..o.job.count.." prohibitBuilding=false")
+        cursor=1,count=#drawPoints(c)-1,markers=c.stationSites and 6 or 0,serial=o.serial}
+    log("START request="..state.requestId.." candidate="..id.." segments="..o.job.count
+        .." alignment="..(c.smoothPreview and c.smoothPreview.status=="validated" and "smooth" or "grid").." prohibitBuilding=false")
     return true
 end
 function overlay.completed(state)
@@ -118,11 +128,12 @@ function overlay.step(state)
         if not o.lease or state.world~=j.world or state.epoch~=j.epoch or state.requestId~=j.requestId
             or not r or not r.finished or r.status~="ok" then overlay.clear(state,"hidden");return end
         local c=r.result.candidates[j.index]
-        if not c or c.id~=j.id or #c.waypoints~=j.count+1 then overlay.clear(state,"error");return end
+        local points=c and drawPoints(c)
+        if not c or c.id~=j.id or type(points)~="table" or #points~=j.count+1 then overlay.clear(state,"error");return end
         while j.cursor<=j.count+j.markers and work<overlay.batchSize do
             local poly,why,color
             if j.cursor<=j.count then
-                poly,why=overlay.ribbon(c.waypoints[j.cursor],c.waypoints[j.cursor+1]);color={0,1,1,0.85}
+                poly,why=overlay.ribbon(points[j.cursor],points[j.cursor+1]);color={0,1,1,0.85}
             else
                 local marker=j.cursor-j.count
                 local source=marker<=3
@@ -163,9 +174,10 @@ function overlay.handle(state,p)
     if p.action=="hide" then overlay.clear(state,"hidden");return true end
     if p.action=="show" then return overlay.start(state,p.candidateId) end
     local c,why=candidate(state,p.candidateId);if not c then return false,why end
-    local a=c.waypoints[math.floor((#c.waypoints+1)/2)]
+    local points=drawPoints(c)
+    local a=points[math.floor((#points+1)/2)]
     local minX,maxX,minY,maxY=a.x,a.x,a.y,a.y
-    for _,v in ipairs(c.waypoints) do minX=math.min(minX,v.x);maxX=math.max(maxX,v.x);minY=math.min(minY,v.y);maxY=math.max(maxY,v.y) end
+    for _,v in ipairs(points) do minX=math.min(minX,v.x);maxX=math.max(maxX,v.x);minY=math.min(minY,v.y);maxY=math.max(maxY,v.y) end
     local ok,err=pcall(function() api.gui.camera.focusPosition(api.type.Vec3f.new(a.x,a.y,a.z),math.max(300,math.sqrt((maxX-minX)^2+(maxY-minY)^2)*1.2)) end)
     if not ok then log("ERROR api=api.gui.camera.focusPosition detail="..flow.text(err));return false,"route_focus_failed" end
     return true

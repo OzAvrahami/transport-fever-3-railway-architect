@@ -2,15 +2,11 @@
 
 ## Current milestone
 
-Targeted grouped-model classification acceptance correction on c6fad5d. Native
-Midhurst retained one station site; Morley retained none. Many MODEL_INSTANCE_LIST
-entities were unknown because of the former eight-instance cap. Native retest remains
-pending. See docs/grouped_model_classification_acceptance_fix.md.
-
-Station-Aware Railway Planning. The owner has verified the cyan route in native TF3
-Freeplay. New station reservations and approach-to-approach planning still require one
-Midhurst?Morley native acceptance test after review. No construction, terrain changes,
-staging deployment, commits, tags, pushes, identity or revision changes.
+Station-Aware Smooth Railway Preview on d8f25c6. The owner has accepted native
+Midhurst-Morley station reservations and cyan station-to-station rendering. Preserve
+those station choices, exact approach XYZ and original A* route. Read-only only;
+no construction, deployment, commits, tags, pushes or identity/revision changes.
+See docs/station_aware_smooth_preview.md for new preview assumptions and validation.
 
 - Preserve the small native window, launcher, five subscriptions and GUI request owner.
   Production Plan Railway explicitly sends stationAware=true. No automatic planning,
@@ -57,11 +53,29 @@ staging deployment, commits, tags, pushes, identity or revision changes.
   Final occupancy classification also processes 16 records/callback. Keep vegetation
   clearance, unknown walking access, source classes and bounded conflict examples in logs.
 - Retain only complete routes with correct outward/inward approach direction and no
-  crossing of either reserved station body. No fabricated alternatives or smoothing.
-  C1 Hermite fitting does not establish safe approaches, curvature or construction.
-- route_overlay.lua remains the sole keyed-zone owner. Draw the original cyan route,
-  orange source and purple destination reservation/axis/cap polygons. Keep waypoint
-  order/coordinates; do not rerun A* for drawing, alternatives or Hide/Show/Focus.
+  crossing of either reserved station body. No fabricated alternatives.
+- Optional smoothing reuses geometry/rail_curve.lua through the pure bounded
+  geometry/station_smooth_preview.lua continuation in the station GUI request owner.
+  Keep original waypoints and station metadata unchanged; publish a separate
+  smoothPreview only after complete checks. Failure retains the accepted grid route.
+  Endpoint derivatives follow source axis and negative destination axis exactly.
+  C1 is not C2, railway feasibility, or native curve validation.
+- Preview-only assumptions: 40 m minimum radius, 8% maximum grade, 2 m sampled
+  terrain-height difference, 24 m curve-to-original-chord envelope, 0.25 m ribbon
+  error, 16 m maximum span. Interior derivative scale 1.75 is a fitting heuristic.
+  Check full Bezier hulls against known hard AABBs and station bodies, and continuous
+  conservative curvature/grade bounds; fresh terrain/water checks remain sampled.
+- Smoothing caps: 4096 source points, 256 exact-collinear-cleaned knots, 8192 subdivision
+  nodes, depth 12, 1024 render spans, 4097 probes/candidate; at most two candidates.
+  Copy 32 points/callback, fit once separately, process eight subdivision units or
+  sixteen probes/callback. Preserve 50 ms observed guard and 60 s snapshot expiry;
+  optional smoothing stops after 10 s total or observed overrun and keeps the grid.
+  Native float terrain probes may round by at most 1/64 m; do not change the integer
+  planner's exact-coordinate contract. Unknown terrain/water means smooth fallback.
+- route_overlay.lua remains the sole keyed-zone owner. Draw validated smooth points
+  when available, otherwise the original cyan route,
+  orange source and purple destination reservation/axis/cap polygons. Preserve original
+  A* data and ordered render points; do not rerun A* for drawing or Hide/Show/Focus.
 - Use documented GUI mission setZone draw=true, prohibitBuilding=false,
   playAnimation=false, zOffset=1 and matching mod-owned removeZone keys only.
   Max 1024 route segments plus six station polygons, 16 zone operations/callback.
@@ -71,9 +85,9 @@ staging deployment, commits, tags, pushes, identity or revision changes.
   site terrain/occupancy arrays into React polling; only compact current-site metadata.
 - No sendCommand, WorldBuildProposal, ProposalViewer or construction tools. Archived
   experimental code under reference/ must never be imported or exposed live.
-- The new station flow is not native acceptance. Record source evidence and assumptions
-  in docs/station_aware_planning.md; preserve all existing regression tests. Stop here
-  for owner review and the focused native test, not another feature milestone.
+- The base station flow is native accepted; smoothing still requires native acceptance.
+  Preserve all regressions and record evidence in docs/station_aware_smooth_preview.md.
+  Stop for owner review and the focused native test.
 
 Topology studies consider supplied demand evidence, distance, geography and transport
 alternatives. A city or industry does not automatically need rail. Economic feasibility

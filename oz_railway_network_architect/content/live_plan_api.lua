@@ -47,14 +47,19 @@ function adapter.town(id)
     return record
 end
 
-function adapter.sample(bounds, x, y)
+local function sample(bounds, x, y, tolerance)
     local raw = {requestedX = x, requestedY = y, errors = {}}
     local path = "api.type.Vec2f.new"
     local ok, position = pcall(function()
         local p = api.type.Vec2f.new(x, y)
         path = "Vec2f.x/y exact grid-coordinate check"
         raw.x, raw.y = p.x, p.y
-        if raw.x ~= x or raw.y ~= y then error("native coordinates differ from integer planner grid", 0) end
+        if tolerance then
+            path="Vec2f.x/y bounded curve-probe rounding"
+            if not flow.finite(raw.x) or not flow.finite(raw.y) or math.abs(raw.x-x)>tolerance or math.abs(raw.y-y)>tolerance then
+                error("native_curve_coordinate_precision_limit",0)
+            end
+        elseif raw.x ~= x or raw.y ~= y then error("native coordinates differ from integer planner grid", 0) end
         return p
     end)
     if not ok then raw.errors[1] = path .. ": " .. tostring(position); return raw end
@@ -64,6 +69,7 @@ function adapter.sample(bounds, x, y)
         return raw
     end
     raw.valid = valid and x > bounds.minX and x < bounds.maxX and y > bounds.minY and y < bounds.maxY
+        and raw.x > bounds.minX and raw.x < bounds.maxX and raw.y > bounds.minY and raw.y < bounds.maxY
     if not raw.valid then return raw end
     local heightOk, height = pcall(function() return api.engine.terrain.getHeightAt(position) end)
     if heightOk and flow.finite(height) then raw.height = height else
@@ -75,5 +81,10 @@ function adapter.sample(bounds, x, y)
     end
     return raw
 end
+
+function adapter.sample(bounds,x,y) return sample(bounds,x,y) end
+-- Curve probes are not integer planner samples. Preserve requested geometry and
+-- report native probe coordinates; accept at most 1/64 m of Vec2f rounding per axis.
+function adapter.sampleCurve(bounds,x,y) return sample(bounds,x,y,1/64) end
 
 return adapter

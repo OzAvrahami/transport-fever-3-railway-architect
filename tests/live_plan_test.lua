@@ -3619,4 +3619,117 @@ test('grouped acceptance: oversized aggregate is an explicit unknown blocker wit
     assert(hasLog('instances_inspected=0 all_tree=0 mixed_non_tree=0 unknown=1 instance_limit_failures=1'))
     assert(hasLog('issue=model_instance_limit_4096'));equal(f.commands,0)
 end)
+test('smooth preview: owner retains original candidates and records bounded smoothing outcomes',function()
+    local gui,step,untilState,event,f=stationSession();assert(stationSubmit(gui,event).accepted)
+    untilState(function(s) return s.request and s.request.phase=='smooth' end)
+    local markers=require('planning.station_sites').markers
+    local original={};for i,c in ipairs(gui:get().request.routes) do original[i]={id=c.id,points=serialize(c.waypoints),
+        source=serialize(markers(c.stationSites.source)),destination=serialize(markers(c.stationSites.destination))} end
+    untilState(completed);untilState(routeShown)
+    for _,c in ipairs(gui:get().request.result.candidates) do
+        assert(c.smoothPreview)
+        for _,o in ipairs(original) do if o.id==c.id then
+            equal(serialize(c.waypoints),o.points);equal(serialize(markers(c.stationSites.source)),o.source)
+            equal(serialize(markers(c.stationSites.destination)),o.destination)
+        end end
+    end
+    assert(hasLog('SMOOTH_COMPLETE'));equal(f.commands,0)
+end)
+test('smooth preview: live owner and renderer use complete smooth points while station markers stay unchanged',function()
+    local gui,step,untilState,event,f=stationSession(function() entities[10].x=-600;entities[10].y=0;entities[20].x=600;entities[20].y=0 end)
+    assert(stationSubmit(gui,event).accepted);untilState(completed);untilState(routeShown)
+    local c=gui:get().request.result.candidates[1];local smooth=c.smoothPreview
+    assert(smooth.status=='validated',smooth.reason);equal(#f.adds,#smooth.points-1+6)
+    for i=1,#smooth.points-1 do
+        local poly=f.adds[i].polygon
+        assert(math.abs((poly[1].x+poly[4].x)/2-smooth.points[i].x)<1e-8)
+        assert(math.abs((poly[2].y+poly[3].y)/2-smooth.points[i+1].y)<1e-8)
+    end
+    local n=#smooth.points-1;equal(f.adds[n+1].color.x,1);equal(f.adds[n+4].color.x,.9)
+    equal(smooth.points[1].x,c.stationSites.source.approach.x)
+    equal(smooth.points[#smooth.points].z,c.stationSites.destination.approach.z)
+    local calls=heightReads;local searches=logCount('PAIR index=');local startCount=logCount('SMOOTH_START')
+    assert(routeAction(gui,event,'hide').accepted);step(200);assert(noZones(f))
+    assert(routeAction(gui,event,'show',c.id).accepted);untilState(routeShown)
+    assert(routeAction(gui,event,'focus',c.id).accepted);equal(heightReads,calls)
+    equal(logCount('PAIR index='),searches);equal(logCount('SMOOTH_START'),startCount)
+    local response=event('status');equal(response.preview.candidates[1].smoothPreview,nil)
+    equal(f.commands,0)
+end)
+test('smooth preview: curve probes accept bounded native float rounding while planner coordinates stay exact',function()
+    reset();local a=require('live_plan_api');local original=api.type.Vec2f.new
+    api.type.Vec2f.new=function(x,y) return original(math.floor(x*1024)/1024,math.floor(y*1024)/1024) end
+    local r=a.sampleCurve(bounds,10.123456,-2.123456);equal(r.valid,true);equal(r.height,-2)
+    assert(r.x~=r.requestedX and math.abs(r.x-r.requestedX)<1/64)
+    assert(#a.sample(bounds,10.123456,-2.123456).errors>0)
+    local before=heightReads;api.type.Vec2f.new=function(x,y) return original(x+1,y) end
+    assert(#a.sampleCurve(bounds,10,0).errors>0);equal(heightReads,before)
+    api.type.Vec2f.new=original;equal(a.sampleCurve(bounds,bounds.maxX,0).valid,false);equal(heightReads,before)
+end)
+test('smooth preview: fresh terrain failure retains complete grid and colored markers without rerunning A star',function()
+    local gui,step,untilState,event,f=stationSession(function() entities[10].x=-600;entities[10].y=0;entities[20].x=600;entities[20].y=0 end)
+    assert(stationSubmit(gui,event).accepted)
+    untilState(function(s) return s.request and s.request.phase=='smooth' end)
+    local searches=logCount('PAIR index=');local original=api.engine.terrain.getHeightAt
+    api.engine.terrain.getHeightAt=function() error('new curve terrain read fixture') end
+    untilState(completed);api.engine.terrain.getHeightAt=original;untilState(routeShown)
+    local r=gui:get().request;equal(r.status,'ok');local c=r.result.candidates[1]
+    equal(c.smoothPreview.status,'fallback');equal(c.smoothPreview.points,nil)
+    assert(c.smoothPreview.reason:find('api.engine.terrain.getHeightAt',1,true))
+    equal(#f.adds,#c.waypoints-1+6);equal(logCount('PAIR index='),searches);equal(f.commands,0)
+end)
+test('smooth preview: work guard and optional time budget preserve grid without extending snapshot age',function()
+    for _,mode in ipairs({'work','optional_age','snapshot'}) do
+        local gui,step,untilState,event,f=stationSession()
+        assert(stationSubmit(gui,event).accepted)
+        untilState(function(s) return s.request and s.request.smoothing~=nil end)
+        if mode=='work' then clockStep=.04;step();clockStep=0
+        elseif mode=='optional_age' then clock=gui:get().request.smoothStarted+11
+        else clock=gui:get().request.started+61 end
+        untilState(completed)
+        if mode=='snapshot' then equal(gui:get().request.status,'invalidated');equal(gui:get().request.result,nil)
+        else
+            equal(gui:get().request.status,'ok')
+            for _,c in ipairs(gui:get().request.result.candidates) do
+                equal(c.smoothPreview.status,'fallback');assert(c.smoothPreview.reason:find('budget',1,true))
+            end
+        end
+        equal(f.commands,0)
+    end
+end)
+test('smooth preview: reload during refinement discards partial points and cannot restore old zones',function()
+    local gui,step,untilState,event,f=stationSession()
+    assert(stationSubmit(gui,event).accepted)
+    untilState(function(s) return s.request and s.request.smoothing~=nil end)
+    local old=gui:get().request;worldId=100;step(80)
+    equal(old.smoothing,nil);equal(old.status,'invalidated');equal(gui:get().request,nil);equal(#f.adds,0);equal(f.commands,0)
+end)
+test('smooth preview: close during work prevents stale drawing; reopen and alternatives reuse completed data',function()
+    local gui,step,untilState,event,f=stationSession(function() entities[10].x=-600;entities[10].y=0;entities[20].x=600;entities[20].y=0 end)
+    assert(stationSubmit(gui,event).accepted)
+    untilState(function(s) return s.request and s.request.smoothing~=nil end)
+    assert(routeAction(gui,event,'close').accepted);untilState(completed);step(20);equal(#f.adds,0)
+    local calls=heightReads;event('status',{openRouteView=true})
+    local r=gui:get().request
+    for _,c in ipairs(r.result.candidates) do
+        assert(routeAction(gui,event,'show',c.id).accepted);untilState(routeShown)
+        equal(gui:get().routeOverlay.candidateId,c.id)
+    end
+    equal(heightReads,calls);assert(routeAction(gui,event,'close').accepted);step(300);assert(noZones(f));equal(f.commands,0)
+end)
+test('smooth preview: per callback native terrain reads stay bounded across a long route',function()
+    local gui,step,untilState,event,f=stationSession(function()
+        entities[10].x=-4000;entities[10].y=0;entities[20].x=4000;entities[20].y=0
+        mapBounds={minX=-9000,maxX=9000,minY=-4096,maxY=4096}
+    end)
+    assert(stationSubmit(gui,event).accepted)
+    untilState(function(s) return s.request and s.request.phase=='smooth' end)
+    while not completed(gui:get()) do local before=heightReads;step();assert(heightReads-before<=16) end
+    equal(gui:get().request.status,'ok')
+    for _,c in ipairs(gui:get().request.result.candidates) do
+        local s=c.smoothPreview;assert(s.status=='validated' or s.status=='fallback')
+        if s.points then assert(#s.points<=1025);equal(s.points[#s.points].x,c.stationSites.destination.approach.x) end
+    end
+    equal(f.commands,0)
+end)
 print('PASS '..passed..' live planning/UI tests (mocked engine and React, not TF3 runtime verification)')

@@ -1,13 +1,16 @@
 # Railway Network Architect
 
-**Current: Targeted station-site occupancy acceptance correction, ready for review.**
+**Current: Grouped-model classification acceptance correction, ready for review.**
 
-The Midhurst–Morley native test rejected 46 station candidates before terrain sampling.
-Screening now distinguishes the station body and facing approach from the broader
-inspection area, and records verified tree clearance separately from hard obstacles.
-Initial screening, final revalidation and route checks share the same policy. Native
-retest success is still pending; no tracks, stations or vegetation changes are made.
-See the [occupancy correction report and focused retest](docs/station_site_occupancy_acceptance_fix.md).
+The latest native test retained one Midhurst station site and no Morley site. Many
+required-region conflicts were unknown because grouped model lists above eight
+instances were not inspected. Classification now checks complete groups incrementally,
+with request budgets, resource caching and revision checks. Only entirely verified
+tree groups become provisional vegetation clearance; mixed or unknown groups block.
+Initial/final screening and route masks retain the shared occupancy policy and native
+aggregate bounds. No tracks, stations, terrain or vegetation changes are made.
+See the [source evidence, limits and focused native retest](docs/grouped_model_classification_acceptance_fix.md).
+Midhurst-Morley success still requires the owner's real-game test.
 
 The owner has verified the cyan route overlay in native TF3 Freeplay. The new station
 workflow is implemented and automated-tested; its native Midhurst?Morley test is pending.
@@ -24,7 +27,7 @@ Hide/Show/Focus Route and close/reload cleanup reuse the existing renderer. No s
 railway is built. Road proximity is not verified walking access, and the reservation is
 not a construction-ready native footprint. The route remains unsmoothed.
 
-**412 tests pass; 61 Lua files pass syntax checks.** All baseline regressions remain.
+**432 tests pass; 63 Lua files pass syntax checks.** All baseline regressions remain.
 See [station data evidence, selection assumptions, changed files, limits and the focused
 native acceptance procedure](docs/station_aware_planning.md). The authoritative A*,
 hierarchy, inventories, network/worklist/batch and geometry algorithms are preserved.

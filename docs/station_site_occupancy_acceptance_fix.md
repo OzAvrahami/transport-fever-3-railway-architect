@@ -1,5 +1,10 @@
 # Station-site occupancy: native-acceptance correction
 
+Historical report: the eight-instance cap below is superseded by the
+[grouped-model acceptance correction](grouped_model_classification_acceptance_fix.md).
+Its region/conflict policy remains in force; see that report for current budgets,
+incremental classification, tests and native retest requirements.
+
 Baseline: `main`, `b14ddce`, initially clean. This is a targeted acceptance fix.
 No staging, commits, pushes, installed-file edits or game-world changes were performed.
 **Midhurst–Morley success remains unverified until the owner retests TF3.**

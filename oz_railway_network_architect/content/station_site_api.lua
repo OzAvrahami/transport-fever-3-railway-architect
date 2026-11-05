@@ -2,7 +2,8 @@
 local flow=ug_require "oz_railway_network_architect::/live_plan_data.lua"
 local sites=ug_require "oz_railway_network_architect::/planning/station_sites.lua"
 local occupancy=ug_require "oz_railway_network_architect::/planning/station_occupancy.lua"
-local A={}
+local models=ug_require "oz_railway_network_architect::/station_model_classifier.lua"
+local A={newModelContext=models.context}
 local function call(path,fn)
     local ok,value=pcall(fn);if not ok then error(path..": "..tostring(value),0) end;return value
 end
@@ -41,7 +42,7 @@ function A.query(b,limit)
     if overflow then error("station_spatial_query_limit",0) end
     table.sort(out,function(a,b) return a.id<b.id end);return out
 end
-function A.object(raw,world)
+local function startObject(raw,world)
     if raw.id==world or comp(raw.id,"TOWN") then return nil end
     local out={id=raw.id,box=raw.box,kind="unknown",source="BOUNDING_VOLUME"}
     if comp(raw.id,"TOWN_BUILDING") then out.kind="building";out.source=out.source.."+TOWN_BUILDING";return out end
@@ -56,26 +57,38 @@ function A.object(raw,world)
         out.a={x=a.x,y=a.y};out.b={x=b.x,y=b.y}
         return out
     end
-    local models=comp(raw.id,"MODEL_INSTANCE_LIST")
-    if models then
+    if comp(raw.id,"MODEL_INSTANCE_LIST") then
         out.source=out.source.."+MODEL_INSTANCE_LIST"
-        -- A mixed model entity is never classified as vegetation by one tree model.
-        -- No filename/category guesses, resource mutation or unbounded model expansion.
-        local ok,tree=pcall(function()
-            local n=#models.fatInstances+#models.thinInstances
-            if n==0 or n>8 then out.classificationIssue="model_count_unknown_or_above_8";return false end
-            for _,list in ipairs({models.fatInstances,models.thinInstances}) do for _,instance in ipairs(list) do
-                if not flow.id(instance.modelId) then error("invalid_model_id",0) end
-                local model=call("api.res.modelRep.get",function() return api.res.modelRep.get(instance.modelId) end)
-                if not model or not model.metadata or not model.metadata.tree or model.metadata.rock then return false end
-            end end
-            return true
-        end)
-        if ok and tree then out.kind="vegetation";out.source=out.source.."+model.metadata.tree"
-        elseif not ok then out.classificationIssue=tostring(tree):sub(1,240) end
+        return out,models.start(raw.id)
     end
     return out
 end
+function A.startObjects(raw,world) return {raw=raw,world=world,objects={},cursor=1} end
+function A.stepObjects(job,context)
+    if job.finished then return end
+    local visits,entities=0,0
+    while job.cursor<=#job.raw and entities<16 and visits<models.perStep do
+        if not job.pending then
+            job.current,job.pending=startObject(job.raw[job.cursor],job.world)
+        end
+        if job.pending then
+            visits=visits+models.step(job.pending,context,job.world,models.perStep-visits)
+            if not job.pending.finished then break end
+            job.current=models.apply(job.current,job.pending);job.pending=nil
+        end
+        if job.current then job.objects[#job.objects+1]=job.current end
+        job.current=nil;job.cursor=job.cursor+1;entities=entities+1
+    end
+    if job.cursor>#job.raw then job.finished=true;job.raw=nil end
+    return visits
+end
+-- Offline synchronous convenience only; live callers advance stepObjects once/callback.
+function A.object(raw,world)
+    local job=A.startObjects({raw},world);local ctx=A.newModelContext(world)
+    while not job.finished do A.stepObjects(job,ctx) end
+    return job.objects[1]
+end
+
 function A.stationIds(town)
     local ids,rejected=flow.ids(call("stationSystem.getStations",function() return api.engine.system.stationSystem.getStations(town) end),64)
     if rejected>0 then error("invalid_station_ids",0) end;return ids
@@ -101,17 +114,16 @@ function A.station(id)
     return {id=id,box=box(v)}
 end
 function A.startClear(site,world)
-    return {site=site,world=world,raw=A.query(occupancy.queryBox(site),256),objects={},cursor=1}
+    local job=A.startObjects(A.query(occupancy.queryBox(site),256),world);job.site=site;return job
 end
-function A.stepClear(job)
+function A.stepClear(job,context)
     if job.finished then return end
-    for i=job.cursor,math.min(job.cursor+15,#job.raw) do
-        local o=A.object(job.raw[i],job.world);if o then job.objects[#job.objects+1]=o end
-        job.cursor=i+1
-    end
-    if job.cursor>#job.raw then
+    -- Live requests supply their shared budget/cache; wrappers/tests own a private one.
+    if not context then job.context=job.context or A.newModelContext(job.world);context=job.context end
+    A.stepObjects(job,context)
+    if job.finished then
         job.clear,job.reason,job.report=occupancy.inspect(job.site,job.objects)
-        job.finished=true;job.raw,job.objects=nil,nil
+        job.objects=nil
     end
 end
 -- Synchronous convenience for offline contract tests; the live owner advances one

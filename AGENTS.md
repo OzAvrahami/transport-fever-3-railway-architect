@@ -2,9 +2,10 @@
 
 ## Current milestone
 
-Targeted station-site occupancy acceptance correction on b14ddce. The native test
-rejected 46 source-town candidates before terrain reads; their entity classes were
-not recorded. Do not claim the retest succeeds. See docs/station_site_occupancy_acceptance_fix.md.
+Targeted grouped-model classification acceptance correction on c6fad5d. Native
+Midhurst retained one station site; Morley retained none. Many MODEL_INSTANCE_LIST
+entities were unknown because of the former eight-instance cap. Native retest remains
+pending. See docs/grouped_model_classification_acceptance_fix.md.
 
 Station-Aware Railway Planning. The owner has verified the cyan route in native TF3
 Freeplay. New station reservations and approach-to-approach planning still require one
@@ -26,6 +27,15 @@ staging deployment, commits, tags, pushes, identity or revision changes.
   Only positively verified tree metadata on every model instance permits provisional
   vegetation clearance; mixed/missing evidence stays unknown. Never remove vegetation.
   Read-only query caps fail explicitly. Never turn unknown terrain into vacant land.
+- Grouped models use station_model_classifier.lua via native one-based vectors,
+  inspecting every reference before provisional vegetation classification. Limit
+  4096 instances/group, 64 visits across an entire callback, 65536 visits/request,
+  1024 model lookups/request and 16 entity records/callback. These are mod budgets,
+  not TF3 capacity limits. Oversized/uninspected/mixed/error groups remain unknown.
+  Compare all three entity revision values across chunks. Keep only plain state.
+  Cache model classifications per request/collection phase; refresh for final checks
+  without resetting spent budgets. Retain aggregate AABBs; per-instance conservative
+  occupancy is unresolved. Distinguish entity counts from affected candidate counts.
 - Passenger rail station hints require a terminal with TRAIN/ELECTRIC_TRAIN plus a
   passenger load/unload flag. Road endpoint distance is not walking catchment. Physical
   track proximity is not operational connectivity or verified attachment/reuse.

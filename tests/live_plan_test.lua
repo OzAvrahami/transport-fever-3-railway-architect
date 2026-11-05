@@ -2925,14 +2925,21 @@ local routeOverlay=ug_require "oz_railway_network_architect::/route_overlay.lua"
 -- Synthetic occupied town blocks and physical street endpoints. These are not native
 -- visibility or catchment evidence; the real adapter is exercised against the declarations.
 local function stationFixture()
-    local f={objects={},townBuildings={}}
+    local f={objects={},townBuildings={},revisions={}}
     local types=api.type.ComponentType
     types.TOWN_BUILDING="townBuilding";types.BASE_EDGE="edge";types.STATION="station"
     types.CONSTRUCTION="construction";types.MODEL_INSTANCE_LIST="models"
     api.type["enum"]={RoadType={STREET="street",TRACK="track"},TransportMode={TRAIN="train",ELECTRIC_TRAIN="electricTrain"}}
     api.type.Vec3f={new=function(x,y,z) return {x=x,y=y,z=z} end}
     api.type.Box3={new=function(a,b) return {min=a,max=b} end}
+    api.engine.getRevision=function(id) return {num=f.revisions[id] or {1,0,0}} end
     local function add(id,box,component)
+        if component.models then
+            local m=component.models
+            local function vector(key) return {size=function() return #m[key] end,
+                at=function(_,i) assert(i>=1 and i<=#m[key]);return m[key][i] end} end
+            m.fatInstances_native=vector("fatInstances");m.thinInstances_native=vector("thinInstances")
+        end
         f.objects[id]={bbox={min={x=box[1],y=box[2],z=-10},max={x=box[3],y=box[4],z=30}},component=component}
     end
     for id,t in pairs(entities) do
@@ -3459,8 +3466,8 @@ test('occupancy acceptance: missing failed mixed or oversized model evidence rem
     api.res.modelRep.get=function() return {metadata={tree={},rock={}}} end
     equal(native.object(raw,worldId).kind,'unknown')
     api.res.modelRep.get=function() return {metadata={tree={}}} end
-    for i=1,9 do m.fatInstances[i]={modelId=1} end
-    o=native.object(raw,worldId);equal(o.kind,'unknown');equal(o.classificationIssue,'model_count_unknown_or_above_8')
+    for i=1,4097 do m.fatInstances[i]={modelId=1} end
+    o=native.object(raw,worldId);equal(o.kind,'unknown');equal(o.classificationIssue,'model_instance_limit_4096')
 end)
 test('occupancy acceptance: final revalidation uses the same body and approach policy including provisional trees',function()
     local gui,step,untilState,event,f=stationSession();local native=require('station_site_api');local p=require('planning.station_occupancy')
@@ -3523,5 +3530,93 @@ test('occupancy acceptance: final revalidation is incremental and cancelled safe
     untilState(function(s) return s.request and s.request.revalidation~=nil end)
     local old=gui:get().request;worldId=100;step(40)
     equal(old.revalidation,nil);equal(old.status,'invalidated');equal(gui:get().request,nil);equal(#f.adds,0)
+end)
+test('grouped acceptance: one callback shares 64 instance visits across entities and exposes only complete groups',function()
+    local gui,step,untilState,event,f=stationSession();local native=require('station_site_api')
+    local raw={};local calls=0
+    api.res={modelRep={get=function() calls=calls+1;return {metadata={tree={}}} end}}
+    for id=8000,8001 do
+        local m={fatInstances={},thinInstances={}};for i=1,40 do m.fatInstances[i]={modelId=0} end
+        f.station.add(id,{-1,-1,1,1},{models=m})
+        raw[#raw+1]={id=id,box={minX=-1,minY=-1,maxX=1,maxY=1}}
+    end
+    local ctx=native.newModelContext(worldId);local job=native.startObjects(raw,worldId)
+    equal(native.stepObjects(job,ctx),64);equal(ctx.visits,64);equal(calls,1)
+    equal(#job.objects,1);equal(job.pending.inspected,24);assert(not job.finished)
+    equal(native.stepObjects(job,ctx),16);assert(job.finished);equal(#job.objects,2)
+    equal(ctx.visits,80);equal(ctx.cacheHits,79);equal(job.raw,nil);equal(f.commands,0)
+end)
+test('grouped acceptance: large all-tree groups pass initial final and route policies with bounded owner work',function()
+    local gui,step,untilState,event,f=stationSession();local calls=0
+    api.res={modelRep={get=function() calls=calls+1;return {metadata={tree={}}} end}}
+    local m={fatInstances={},thinInstances={}};for i=1,129 do m.thinInstances[i]={modelId=1} end
+    f.station.add(8000,{-1800,-900,1800,900},{models=m})
+    assert(stationSubmit(gui,event).accepted)
+    local finalSeen=false
+    for _=1,3000 do
+        if completed(gui:get()) then break end
+        local before=gui:get().request.modelContext;local visits=before and before.visits or 0
+        step();local r=gui:get().request
+        if r.modelContext then
+            assert(r.modelContext.visits-visits<=64)
+            if r.revalidation then finalSeen=true;assert(r.modelContext.visits>=258) end
+        end
+    end
+    local r=gui:get().request;equal(r.status,'ok');assert(finalSeen);equal(calls,2)
+    equal(r.modelContext,nil);equal(r.objectJob,nil);untilState(routeShown)
+    local c=r.result.candidates[1];equal(c.vegetationClearanceUnverified,true)
+    equal(c.stationSites.source.evidence.finalVegetationClearance,1)
+    equal(c.waypoints[1].x,c.stationSites.source.approach.x)
+    assert(hasLog('MODEL_GROUPS town=10 unique_entities=1 multi_instance_groups=1 instances_inspected=129 all_tree=1'))
+    assert(hasLog('MODEL_CANDIDATES town=10'));assert(hasLog('counts=candidates_not_entities'))
+    equal(logCount('MODEL_GROUPS town='),2);equal(logCount('MODEL_BUDGET visits='),1);equal(f.commands,0)
+end)
+test('grouped acceptance: final revalidation refreshes resource metadata and rejects newly incompatible groups',function()
+    local gui,step,untilState,event,f=stationSession();local tree=true;local calls=0
+    api.res={modelRep={get=function() calls=calls+1;return {metadata=tree and {tree={}} or {rock={}}} end}}
+    local m={fatInstances={},thinInstances={}};for i=1,9 do m.fatInstances[i]={modelId=1} end
+    f.station.add(8000,{-1800,-900,1800,900},{models=m})
+    assert(stationSubmit(gui,event).accepted)
+    untilState(function(s) return s.request and s.request.phase=='verify' end)
+    equal(calls,1);tree=false;untilState(completed)
+    local r=gui:get().request;equal(r.status,'unsupported');equal(calls,2)
+    assert(r.reason:find('station_reservation_changed',1,true));equal(r.result,nil)
+    assert(hasLog('REVALIDATION_SAMPLE entity=8000 class=unknown'));equal(#f.adds,0);equal(f.commands,0)
+end)
+test('grouped acceptance: mixed remainder blocks candidates and route masks using retained aggregate bounds',function()
+    local gui,step,untilState,event,f=stationSession();local p=require('planning.station_occupancy')
+    api.res={modelRep={get=function(id) return {metadata=id==2 and {rock={}} or {tree={}}} end}}
+    local m={fatInstances={},thinInstances={}};for i=1,129 do m.fatInstances[i]={modelId=i==129 and 2 or 1} end
+    f.station.add(8000,{-1800,-900,1800,900},{models=m})
+    assert(stationSubmit(gui,event).accepted)
+    untilState(function(s) return s.request and s.request.phase=='sites' end)
+    local o=gui:get().request.objects[#gui:get().request.objects]
+    equal(o.id,8000);equal(o.kind,'unknown');equal(o.modelGroup.inspected,129)
+    equal(o.box.minX,-1800);equal(o.box.maxX,1800)
+    equal(p.segment({x=-1700,y=0},{x=1700,y=0},{o}).id,8000)
+    untilState(completed);equal(gui:get().request.status,'unsupported');equal(heightReads,0)
+    assert(hasLog('all_tree=0 mixed_non_tree=1 unknown=0'))
+    assert(hasLog('unknown_group_blocked='));equal(#f.adds,0);equal(f.commands,0)
+end)
+test('grouped acceptance: world invalidation discards a partial classification and its request cache',function()
+    local gui,step,untilState,event,f=stationSession()
+    api.res={modelRep={get=function() return {metadata={tree={}}} end}}
+    local m={fatInstances={},thinInstances={}};for i=1,4096 do m.fatInstances[i]={modelId=1} end
+    f.station.add(8000,{-1800,-900,1800,900},{models=m})
+    assert(stationSubmit(gui,event).accepted)
+    untilState(function(s) return s.request and s.request.objectJob and s.request.objectJob.pending end)
+    local old=gui:get().request;assert(old.objectJob.pending.inspected<4096)
+    worldId=100;step(40);equal(old.status,'invalidated');equal(old.modelContext,nil);equal(old.objectJob,nil)
+    equal(gui:get().request,nil);equal(heightReads,0);equal(#f.adds,0);equal(f.commands,0)
+end)
+test('grouped acceptance: oversized aggregate is an explicit unknown blocker without resource reads',function()
+    local gui,step,untilState,event,f=stationSession();local calls=0
+    api.res={modelRep={get=function() calls=calls+1;return {metadata={tree={}}} end}}
+    local m={fatInstances={},thinInstances={}};for i=1,4097 do m.fatInstances[i]={modelId=1} end
+    f.station.add(8000,{-1800,-900,1800,900},{models=m})
+    assert(stationSubmit(gui,event).accepted);untilState(completed)
+    equal(gui:get().request.status,'unsupported');equal(calls,0);equal(heightReads,0)
+    assert(hasLog('instances_inspected=0 all_tree=0 mixed_non_tree=0 unknown=1 instance_limit_failures=1'))
+    assert(hasLog('issue=model_instance_limit_4096'));equal(f.commands,0)
 end)
 print('PASS '..passed..' live planning/UI tests (mocked engine and React, not TF3 runtime verification)')

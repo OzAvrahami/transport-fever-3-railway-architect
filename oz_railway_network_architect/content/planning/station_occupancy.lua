@@ -36,7 +36,7 @@ end
 function P.inspect(c,objects)
     local regions=P.regions(c)
     local report={body={},approach={},neighborhood={},bodyConflicts=0,approachConflicts=0,
-        vegetationClearance=0,blockedKinds={},examples={}}
+        vegetationClearance=0,blockedKinds={},examples={},modelGroupAffected=false,unknownGroupBlocked=false}
     for _,region in ipairs({"body","approach","neighborhood"}) do
         for _,kind in ipairs(P.kinds) do report[region][kind]=0 end
     end
@@ -47,6 +47,10 @@ function P.inspect(c,objects)
             if P.intersects(regions[region],o.box) then report[region][k]=report[region][k]+1 end
         end
         if body or approach then
+            if o.modelGroup then
+                report.modelGroupAffected=true
+                if k=="unknown" then report.unknownGroupBlocked=true end
+            end
             if P.hard(o) then
                 if body then report.bodyConflicts=report.bodyConflicts+1 end
                 if approach then report.approachConflicts=report.approachConflicts+1 end

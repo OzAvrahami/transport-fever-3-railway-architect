@@ -9,13 +9,16 @@ local function log(s) debugPrint("[RNA:STATION] "..s) end
 local function audit(t,c)
     local r=c.occupancy
     if not t.audit then
-        t.audit={candidates=0,bodyConflicts=0,approachConflicts=0,examples=0,seen={},rejected={},body={},approach={},neighborhood={}}
+        t.audit={candidates=0,bodyConflicts=0,approachConflicts=0,examples=0,seen={},rejected={},body={},approach={},neighborhood={},
+            groupAffected=0,unknownGroupBlocked=0}
         for _,kind in ipairs(occupancy.kinds) do
             t.audit.rejected[kind]=0
             for _,region in ipairs({"body","approach","neighborhood"}) do t.audit[region][kind]=0 end
         end
     end
     local a=t.audit;a.candidates=a.candidates+1
+    if r.modelGroupAffected then a.groupAffected=a.groupAffected+1 end
+    if r.unknownGroupBlocked then a.unknownGroupBlocked=a.unknownGroupBlocked+1 end
     a.bodyConflicts=a.bodyConflicts+r.bodyConflicts;a.approachConflicts=a.approachConflicts+r.approachConflicts
     for _,kind in ipairs(occupancy.kinds) do
         if r.blockedKinds[kind] then a.rejected[kind]=a.rejected[kind]+1 end
@@ -36,7 +39,12 @@ end
 local function stop(s,status,reason)
     if s.child and not s.child.finished then corridor.invalidate(s.child,reason) end
     s.child,s.towns,s.raw,s.samples,s.proposals,s.objects=nil,nil,nil,nil,nil,nil
-    s.revalidation=nil
+    if s.modelContext then
+        local c=s.modelContext
+        log("MODEL_BUDGET visits="..c.visits.." lookups="..c.lookups.." cache_hits="..c.cacheHits.." lookup_errors="..c.lookupErrors
+            .." max_group=4096 max_visits=65536 max_lookups=1024 per_callback=64 spatial_precision=aggregate_AABB_unresolved")
+    end
+    s.revalidation,s.objectJob,s.modelContext=nil,nil,nil
     s.finished,s.status,s.reason=true,status,reason
     s.routes,s.pairs=nil,nil
     if status~="ok" then s.result=nil end
@@ -64,6 +72,7 @@ end
 local function work(s)
     if s.phase=="begin" then
         s.bounds=read.bounds();s.towns={};s.objects={};s.townIndex=1;s.cursor=1
+        s.modelContext=native.newModelContext(s.world)
         local a,b=native.buildingIds(s.sourceId,s.destinationId)
         for i,id in ipairs({s.sourceId,s.destinationId}) do
             local t=read.town(id)
@@ -92,21 +101,37 @@ local function work(s)
         local t=s.towns[s.townIndex];local b=t.urban
         if b.maxX-b.minX>4096 or b.maxY-b.minY>4096 then error("urban_region_limit",0) end
         s.raw=native.query({minX=b.minX-768,minY=b.minY-768,maxX=b.maxX+768,maxY=b.maxY+768},2048)
-        s.cursor=1;s.phase="objects"
+        s.objectJob=native.startObjects(s.raw,s.world);s.raw=nil;s.phase="objects"
     elseif s.phase=="objects" then
-        local t=s.towns[s.townIndex];local last=math.min(s.cursor+15,#s.raw)
-        for i=s.cursor,last do
-            local o=native.object(s.raw[i],s.world)
-            if o then t.objects[#t.objects+1]=o;s.objects[#s.objects+1]=o end
+        local t=s.towns[s.townIndex]
+        native.stepObjects(s.objectJob,s.modelContext)
+        if s.objectJob.finished then
+            t.objects=s.objectJob.objects
+            local g={entities=0,multi=0,inspected=0,all_tree=0,mixed_non_tree=0,unknown=0,limits=0,errors=0,errorEvents=0,budgets=0}
+            for _,o in ipairs(t.objects) do
+                s.objects[#s.objects+1]=o
+                local m=o.modelGroup
+                if m then
+                    g.entities=g.entities+1;g.multi=g.multi+(m.count>1 and 1 or 0);g.inspected=g.inspected+m.inspected
+                    g[m.outcome]=g[m.outcome]+1;g.limits=g.limits+(m.instanceLimit and 1 or 0)
+                    g.errors=g.errors+(m.errors>0 and 1 or 0);g.budgets=g.budgets+(m.budgetLimit and 1 or 0)
+                    g.errorEvents=g.errorEvents+m.errors
+                end
+            end
+            log("MODEL_GROUPS town="..t.id.." unique_entities="..g.entities.." multi_instance_groups="..g.multi
+                .." instances_inspected="..g.inspected.." all_tree="..g.all_tree.." mixed_non_tree="..g.mixed_non_tree
+                .." unknown="..g.unknown.." instance_limit_failures="..g.limits.." budget_failures="..g.budgets
+                .." groups_with_errors="..g.errors.." classification_errors="..g.errorEvents.." spatial_precision=aggregate_AABB_unresolved")
+            s.objectJob=nil;advanceTown(s)
         end
-        s.cursor=last+1
-        if s.cursor>#s.raw then s.raw=nil;advanceTown(s) end
     elseif s.phase=="sites" then
         local t=s.towns[s.townIndex];local c=s.proposals[s.townIndex][s.siteIndex]
         if not c then
             t.sites=sites.shortlist(t.sites)
             local a=t.audit
             if a then
+                log("MODEL_CANDIDATES town="..t.id.." affected="..a.groupAffected.." unknown_group_blocked="..a.unknownGroupBlocked
+                    .." total_screened="..a.candidates.." counts=candidates_not_entities")
                 log("OCCUPANCY town="..t.id.." generated="..#s.proposals[s.townIndex].." screened="..a.candidates
                     .." body_conflicts="..a.bodyConflicts.." approach_conflicts="..a.approachConflicts.." counts=candidate_entity_incidences")
                 for _,kind in ipairs(occupancy.kinds) do log("OCCUPANCY_CLASS town="..t.id.." class="..kind
@@ -198,12 +223,15 @@ local function work(s)
         end
     elseif s.phase=="verify" then
         if #s.routes==0 then error("station_planning_unresolved_no_compatible_corridor",0) end
+        if not s.finalModelCacheReset then
+            s.modelContext.cache={};s.finalModelCacheReset=true -- Refresh metadata for final checks; retain spent budgets.
+        end
         validateSources(s)
         local c=s.routes[s.verifyIndex]
         if c then
             local site=c.stationSites[s.verifyRole==2 and "destination" or "source"]
             if not s.revalidation then s.revalidation=native.startClear(site,s.world);return end
-            native.stepClear(s.revalidation)
+            native.stepClear(s.revalidation,s.modelContext)
             if not s.revalidation.finished then return end
             local clear,reason,report=s.revalidation.clear,s.revalidation.reason,s.revalidation.report
             s.revalidation=nil
